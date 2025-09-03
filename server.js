@@ -20,19 +20,26 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));  // ✅ pas besoin de body-parser
 
 // ✅ CORS à whitelist (une seule fois)
-const allowed = (process.env.CORS_ORIGINS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+const allowed = new Set(
+  String(process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim().replace(/\/$/, '')) // enlève un / final éventuel
+    .filter(Boolean)
+);
 
 app.use(cors({
-  origin: (origin, cb) => {
+  origin(origin, cb) {
+    // Requêtes sans Origin (ex: Postman, cron) → OK
     if (!origin) return cb(null, true);
-    if (!allowed.length) return cb(null, true);
-    if (allowed.includes(origin)) return cb(null, true);
-    return cb(new Error('CORS: Origin not allowed'), { origin: false });
+    const o = origin.replace(/\/$/, '');
+    // Autorise si whitelist vide OU si l'origine est dans la liste
+    const isAllowed = allowed.size === 0 || allowed.has(o);
+    return cb(null, isAllowed);           // ⬅️ surtout pas "cb(new Error…)"
   },
   credentials: true,
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type','Authorization'],
+  optionsSuccessStatus: 204,
 }));
 
 // Log propre si le pool rencontre un souci
@@ -83,7 +90,10 @@ function authorizeRoles(...roles) {
 
 app.use(express.json());
 
-// ─────────────────────────────────────────────────────────────
+// (optionnel) pré-vol pour toutes les routes
+app.options('*', cors());
+
+// ────────────────────────────────────────────────────────────f─
 // Healthcheck (optionnel) & démarrage
 // ─────────────────────────────────────────────────────────────
 app.get('/health', async (_req, res) => {
