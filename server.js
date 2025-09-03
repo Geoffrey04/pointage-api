@@ -20,32 +20,30 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));  // ✅ pas besoin de body-parser
 
 // Whitelist depuis la variable d'env CORS_ORIGINS
+// ---- CORS (une seule implémentation, gère aussi la pré-requête) ----
 const ALLOWED = new Set(
-  String(process.env.CORS_ORIGINS || '')
+  String(process.env.CORS_ORIGINS || 'https://emm-pointage.fr,https://www.emm-pointage.fr')
     .split(',')
-    .map(s => s.trim().replace(/\/$/, ''))  // enlève un / final
+    .map(s => s.trim().replace(/\/$/, ''))
     .filter(Boolean)
 );
 
-// Aide caches/CDN
 app.use((req, res, next) => { res.setHeader('Vary', 'Origin'); next(); });
 
-app.use(cors({
-  origin(origin, cb) {
-    // Requêtes sans Origin (Postman, crons…) → OK
-    if (!origin) return cb(null, true);
-    const ok = ALLOWED.size === 0 || ALLOWED.has(origin.replace(/\/$/, ''));
-    // IMPORTANT: on ne jette PAS d'erreur → jamais de 500 en pré-vol
-    cb(null, ok);
-  },
-  credentials: true,
-  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization'],
-  optionsSuccessStatus: 204,
-}));
+app.use((req, res, next) => {
+  const origin = (req.headers.origin || '').replace(/\/$/, '');
+  const allowed = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
 
-// Répondre aux pré-vols de toutes les routes
-app.options('*', cors());
+  if (allowed && origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
+// ---------------------------------------------------------------
 
 // Log propre si le pool rencontre un souci
 pool.on('error', (err) => console.error('[pg] Pool error:', err));
@@ -92,11 +90,6 @@ function authorizeRoles(...roles) {
     next()
   }
 }
-
-app.use(express.json());
-
-// (optionnel) pré-vol pour toutes les routes
-app.options('*', cors());
 
 // ────────────────────────────────────────────────────────────f─
 // Healthcheck (optionnel) & démarrage
