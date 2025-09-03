@@ -82,12 +82,6 @@ function authorizeRoles(...roles) {
 }
 
 app.use(express.json());
-app.use(
-  cors({
-    origin: process.env.CORS_ORIGIN || 'https://app.emm-pointage.fr', // ex: https://app.ton-domaine.fr
-    credentials: true,
-  })
-);
 
 // ─────────────────────────────────────────────────────────────
 // Healthcheck (optionnel) & démarrage
