@@ -94,10 +94,14 @@ app.use(
 // ─────────────────────────────────────────────────────────────
 app.get('/health', async (_req, res) => {
   try {
-    const r = await pool.query('SELECT 1::int AS ok'); // force int
-    res.json({ ok: true, db: String(r.rows?.[0]?.ok) === '1', v: 'h3' });
+    const r = await pool.query('SELECT 1::int AS ok');
+    return res.json({ ok: true, db: String(r.rows?.[0]?.ok) === '1', v: 'h4' });
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, v: 'h3' });
+    // log côté serveur (visible dans cPanel > Setup Node.js App > Error Log)
+    console.error('HEALTH ERROR:', e);
+    // renvoie un message utile même si e.message est vide
+    const msg = (e && (e.message || e.code || e.name)) || String(e || '');
+    return res.status(500).json({ ok: false, error: msg, v: 'h4' });
   }
 });
 
