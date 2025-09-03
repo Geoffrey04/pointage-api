@@ -1,11 +1,8 @@
-// db.js
-const { Pool } = require('pg');
+// db.js — Neon serverless via HTTPS/443
+const { Pool, neonConfig } = require('@neondatabase/serverless');
+neonConfig.fetchConnectionCache = true;
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL, // chaîne Neon
-  ssl: process.env.NODE_ENV === 'production'
-    ? { rejectUnauthorized: false }
-    : false,
+module.exports = new Pool({
+  // ⚠️ utilisera DATABASE_URL sans "-pooler"
+  connectionString: process.env.DATABASE_URL,
 });
-
-module.exports = pool;
