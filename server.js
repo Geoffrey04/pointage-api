@@ -8,7 +8,7 @@ const bodyParser = require('body-parser')
 const cors = require('cors')
 const jwt = require('jsonwebtoken')
 const bcrypt = require('bcrypt')
-const { Pool } = require('pg')
+const { Pool } = require('./db')
 const pg = require('pg')
 
 // Forcer les colonnes PostgreSQL DATE (OID 1082) à être renvoyées en "YYYY-MM-DD"
@@ -21,16 +21,25 @@ const app = express()
 const PORT = Number(process.env.PORT) || 3000
 
 // CORS (configurable en prod via ALLOWED_ORIGINS, séparées par virgules)
-const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+const allowed = (process.env.CORS_ORIGINS || '')
   .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean)
-app.use(
-  cors({
-    origin: allowedOrigins.length ? allowedOrigins : true,
-    credentials: true,
-  }),
-)
+  .map(s => s.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // Requêtes server-to-server / outils sans Origin
+    if (!origin) return cb(null, true);
+    // Si aucune whitelist n'est fournie, autorise tout (pratique en dev)
+    if (allowed.length === 0) return cb(null, true);
+    // Autorise si l'origine est dans la whitelist exacte
+    if (allowed.includes(origin)) return cb(null, true);
+    // Refuse sinon
+    return cb(new Error('CORS: Origin not allowed'), { origin: false });
+  },
+  credentials: true,
+}));
+
 
 app.use(bodyParser.json({ limit: '1mb' }))
 app.set('trust proxy', 1) // utile si reverse proxy (Heroku/Render/Nginx)
@@ -96,6 +105,14 @@ function authorizeRoles(...roles) {
     next()
   }
 }
+
+app.use(express.json());
+app.use(
+  cors({
+    origin: process.env.CORS_ORIGIN || 'https://app.emm-pointage.fr', // ex: https://app.ton-domaine.fr
+    credentials: true,
+  })
+);
 
 // ─────────────────────────────────────────────────────────────
 // Utils Date / Génération de séances (UTC safe)
@@ -979,10 +996,21 @@ app.post(
   },
 )
 
+/** 404 par défaut */
+app.use((req, res) => res.status(404).json({ error: 'Not found' }));
+
+
 // ─────────────────────────────────────────────────────────────
 // Healthcheck (optionnel) & démarrage
 // ─────────────────────────────────────────────────────────────
-app.get('/health', (_req, res) => res.json({ ok: true }))
+app.get('/health', async (_req, res) => {
+  try {
+    const r = await pool.query('SELECT 1 AS ok');
+    res.json({ ok: true, db: r.rows[0].ok === 1 });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`✅ Serveur démarré sur http://localhost:${PORT}`)
