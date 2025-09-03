@@ -19,28 +19,33 @@ const PORT = Number(process.env.PORT) || 3000;
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));  // ✅ pas besoin de body-parser
 
-// ✅ CORS à whitelist (une seule fois)
-const allowed = new Set(
+// Whitelist depuis la variable d'env CORS_ORIGINS
+const ALLOWED = new Set(
   String(process.env.CORS_ORIGINS || '')
     .split(',')
-    .map(s => s.trim().replace(/\/$/, '')) // enlève un / final éventuel
+    .map(s => s.trim().replace(/\/$/, ''))  // enlève un / final
     .filter(Boolean)
 );
 
+// Aide caches/CDN
+app.use((req, res, next) => { res.setHeader('Vary', 'Origin'); next(); });
+
 app.use(cors({
   origin(origin, cb) {
-    // Requêtes sans Origin (ex: Postman, cron) → OK
+    // Requêtes sans Origin (Postman, crons…) → OK
     if (!origin) return cb(null, true);
-    const o = origin.replace(/\/$/, '');
-    // Autorise si whitelist vide OU si l'origine est dans la liste
-    const isAllowed = allowed.size === 0 || allowed.has(o);
-    return cb(null, isAllowed);           // ⬅️ surtout pas "cb(new Error…)"
+    const ok = ALLOWED.size === 0 || ALLOWED.has(origin.replace(/\/$/, ''));
+    // IMPORTANT: on ne jette PAS d'erreur → jamais de 500 en pré-vol
+    cb(null, ok);
   },
   credentials: true,
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization'],
   optionsSuccessStatus: 204,
 }));
+
+// Répondre aux pré-vols de toutes les routes
+app.options('*', cors());
 
 // Log propre si le pool rencontre un souci
 pool.on('error', (err) => console.error('[pg] Pool error:', err));
