@@ -2,25 +2,24 @@
 // ─────────────────────────────────────────────────────────────
 // Bootstrap & dépendances
 // ─────────────────────────────────────────────────────────────
-require('dotenv').config()
-const express = require('express')
-const bodyParser = require('body-parser')
-const cors = require('cors')
-const jwt = require('jsonwebtoken')
-const bcrypt = require('bcrypt')
-const { Pool } = require('./db')
-const pg = require('pg')
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
+const pg = require('pg');
+const pool = require('./db');      // ✅ on importe le *pool* prêt à l’emploi
 
-// Forcer les colonnes PostgreSQL DATE (OID 1082) à être renvoyées en "YYYY-MM-DD"
-pg.types.setTypeParser(1082, (v) => v)
+// Forcer le type DATE (OID 1082) à 'YYYY-MM-DD'
+pg.types.setTypeParser(1082, (v) => v);
 
-// ─────────────────────────────────────────────────────────────
-// App / configuration
-// ─────────────────────────────────────────────────────────────
-const app = express()
-const PORT = Number(process.env.PORT) || 3000
+const app = express();
+const PORT = Number(process.env.PORT) || 3000;
 
-// CORS (configurable en prod via ALLOWED_ORIGINS, séparées par virgules)
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '1mb' }));  // ✅ pas besoin de body-parser
+
+// ✅ CORS à whitelist (une seule fois)
 const allowed = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map(s => s.trim())
@@ -28,41 +27,17 @@ const allowed = (process.env.CORS_ORIGINS || '')
 
 app.use(cors({
   origin: (origin, cb) => {
-    // Requêtes server-to-server / outils sans Origin
     if (!origin) return cb(null, true);
-    // Si aucune whitelist n'est fournie, autorise tout (pratique en dev)
-    if (allowed.length === 0) return cb(null, true);
-    // Autorise si l'origine est dans la whitelist exacte
+    if (!allowed.length) return cb(null, true);
     if (allowed.includes(origin)) return cb(null, true);
-    // Refuse sinon
     return cb(new Error('CORS: Origin not allowed'), { origin: false });
   },
   credentials: true,
 }));
 
+// Log propre si le pool rencontre un souci
+pool.on('error', (err) => console.error('[pg] Pool error:', err));
 
-app.use(bodyParser.json({ limit: '1mb' }))
-app.set('trust proxy', 1) // utile si reverse proxy (Heroku/Render/Nginx)
-
-// ─────────────────────────────────────────────────────────────
-// PostgreSQL
-// ─────────────────────────────────────────────────────────────
-const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: Number(process.env.DB_PORT) || undefined,
-  ssl:
-    String(process.env.DB_SSL || '').toLowerCase() === 'true'
-      ? { rejectUnauthorized: false }
-      : undefined,
-})
-
-// log propre si la connexion échoue en cours de vie du process
-pool.on('error', (err) => {
-  console.error('[pg] Pool error:', err)
-})
 
 // Arrêt propre (containers / PM2 / systemd)
 function shutdown(signal) {
