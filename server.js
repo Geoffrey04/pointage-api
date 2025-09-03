@@ -1005,12 +1005,14 @@ app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 // ─────────────────────────────────────────────────────────────
 app.get('/health', async (_req, res) => {
   try {
-    const r = await pool.query('SELECT 1 AS ok');
-    res.json({ ok: true, db: r.rowCount === 1 }); 
+    const r = await pool.query('SELECT 1::int AS ok'); // force int
+    const val = r.rows?.[0]?.ok;
+    res.json({ ok: true, db: String(val) === '1' });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+
 
 
 app.listen(PORT, () => {
