@@ -115,6 +115,19 @@ app.use(
 );
 
 // ─────────────────────────────────────────────────────────────
+// Healthcheck (optionnel) & démarrage
+// ─────────────────────────────────────────────────────────────
+app.get('/health', async (_req, res) => {
+  try {
+    const r = await pool.query('SELECT 1::int AS ok'); // force int
+    res.json({ ok: true, db: String(r.rows?.[0]?.ok) === '1', v: 'h3' });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message, v: 'h3' });
+  }
+});
+
+
+// ─────────────────────────────────────────────────────────────
 // Utils Date / Génération de séances (UTC safe)
 // ─────────────────────────────────────────────────────────────
 function utcNoon(y, m0, d) {
@@ -998,21 +1011,6 @@ app.post(
 
 /** 404 par défaut */
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
-
-
-// ─────────────────────────────────────────────────────────────
-// Healthcheck (optionnel) & démarrage
-// ─────────────────────────────────────────────────────────────
-app.get('/health', async (_req, res) => {
-  try {
-    const r = await pool.query('SELECT 1::int AS ok'); // force int
-    res.json({ ok: true, db: String(r.rows?.[0]?.ok) === '1', v: 'h3' });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message, v: 'h3' });
-  }
-});
-s
-
 
 
 app.listen(PORT, () => {
