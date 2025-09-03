@@ -1006,11 +1006,12 @@ app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.get('/health', async (_req, res) => {
   try {
     const r = await pool.query('SELECT 1 AS ok');
-    res.json({ ok: true, db: r.rows[0].ok === 1 });
+    res.json({ ok: true, db: r.rowCount === 1 }); 
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
+
 
 app.listen(PORT, () => {
   console.log(`✅ Serveur démarré sur http://localhost:${PORT}`)
