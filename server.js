@@ -16,13 +16,13 @@ console.log('Boot node app… NODE_ENV=%s', process.env.NODE_ENV);
 console.log('PORT fourni par l’hébergeur =', process.env.PORT);
 
 require('dotenv').config();
+const pool = require('./db');
 const express = require('express');
 const cors = require('cors'); // présent si tu veux l’utiliser ailleurs
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');       // sécurise le boot (Windows/Node 22)
 const pg = require('pg');
-// const { Pool } = require('pg');
-const pool = require('./db'); // <-- on importe le pool prêt à l’emploi
+ const { Pool } = require('pg');
 
 
 // Forcer les DATE Postgres (OID 1082) -> 'YYYY-MM-DD'
@@ -77,13 +77,21 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false }));
 
 /* ───────────── Logs pool/arrêt propre ───────────── */
-pool.on('error', (err) => console.error('[pg] Pool error:', err));
-function shutdown(signal) {
+// nouveau (safe)
+if (pool && typeof pool.on === 'function') {
+  pool.on('error', (err) => console.error('[pg] Pool error:', err));
+} else {
+  console.error('[boot] pool indisponible au démarrage');
+}
+
+async function shutdown(signal) {
   return async () => {
     console.log(`\n${signal} reçu → fermeture des connexions…`);
     try {
-      await pool.end();
-      console.log('Pool PostgreSQL fermé. Bye!');
+      if (pool && typeof pool.end === 'function') {
+        await pool.end();
+        console.log('Pool PostgreSQL fermé. Bye!');
+      }
       process.exit(0);
     } catch (e) {
       console.error('Erreur à la fermeture du pool:', e);
@@ -91,6 +99,7 @@ function shutdown(signal) {
     }
   };
 }
+
 process.on('SIGINT', shutdown('SIGINT'));
 process.on('SIGTERM', shutdown('SIGTERM'));
 process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
