@@ -17,7 +17,10 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '1mb' }));  // ✅ pas besoin de body-parser
+app.use(express.json({ limit: '1mb' }));  
+
+// pour parser application/x-www-form-urlencoded (login sans pré-vol CORS)
+app.use(express.urlencoded({ extended: false }));
 
   // Whitelist depuis la variable d'env CORS_ORIGINS
 // ---- CORS "manuel" (tout en haut) ----
