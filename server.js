@@ -22,7 +22,6 @@ app.use(express.json({ limit: '1mb' }));
 // pour parser application/x-www-form-urlencoded (login sans pré-vol CORS)
 app.use(express.urlencoded({ extended: false }));
 
-  // Whitelist depuis la variable d'env CORS_ORIGINS
 // ---- CORS "manuel" (tout en haut) ----
 const rawAllowed = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '')
   .split(',')
