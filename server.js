@@ -24,10 +24,12 @@ app.use(express.urlencoded({ extended: false }));
 
   // Whitelist depuis la variable d'env CORS_ORIGINS
 // ---- CORS "manuel" (tout en haut) ----
-const rawAllowed = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '');
-const ALLOWED = new Set(
-  rawAllowed.split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean)
-);
+const rawAllowed = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map(s => s.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
+const allowedSet = new Set(rawAllowed);
 
 app.use((req, res, next) => {
   res.setHeader('Vary', 'Origin');               // pour les caches/CDN
@@ -44,6 +46,27 @@ app.use((req, res, next) => {
   next();
 });
 
+const corsOptions = {
+  origin: (origin, cb) => {
+    // Requêtes serveur-serveur (curl/cron) n'ont pas d'Origin → on autorise
+    if (!origin) return cb(null, true);
+    const o = origin.replace(/\/$/, '');
+    const ok = allowedSet.size === 0 || allowedSet.has(o);
+    if (ok) return cb(null, true);
+    // on refuse silencieusement (le navigateur bloquera), mais on log pour debug
+    console.warn(`[CORS] Origin refusée: ${origin}`);
+    return cb(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
+  optionsSuccessStatus: 204,
+  maxAge: 86400, // 24h
+};
+
+app.use(cors(corsOptions));
+// gère explicitement tous les pré-vols (OPTIONS) pour éviter les 500
+app.options('*', cors(corsOptions));
   // Log propre si le pool rencontre un souci
   pool.on('error', (err) => console.error('[pg] Pool error:', err));
 
