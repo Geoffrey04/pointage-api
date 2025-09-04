@@ -1,130 +1,130 @@
-// server.js
-// ─────────────────────────────────────────────────────────────
-// Bootstrap & dépendances
-// ─────────────────────────────────────────────────────────────
+// server.js (version prod corrigée)
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
+const cors = require('cors'); // présent si tu veux l’utiliser ailleurs
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');       // sécurise le boot (Windows/Node 22)
 const pg = require('pg');
-const pool = require('./db');      // ✅ on importe le *pool* prêt à l’emploi
+const pool = require('./db');             // Pool Neon (@neondatabase/serverless)
 
-// Forcer le type DATE (OID 1082) à 'YYYY-MM-DD'
-pg.types.setTypeParser(1082, (v) => v);
+// Forcer les DATE Postgres (OID 1082) -> 'YYYY-MM-DD'
+pg.types.setTypeParser(1082, v => v);
+
+
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// --- CORS de base : whitelist via .env, handle OPTIONS en priorité ---
-const rawAllowed = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '')
-  .split(',')
-  .map(s => s.trim().replace(/\/$/, ''))
-  .filter(Boolean);
-const ALLOWED = new Set(rawAllowed);
+/* ───────────── CORS : whitelist via .env (CORS_ORIGINS) ───────────── */
+const ALLOWED = new Set(
+  String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map(s => s.trim().replace(/\/$/, ''))
+    .filter(Boolean)
+);
 
-// 1) Interception ULTRA TÔT des pré-flights OPTIONS (évite tout 500)
+// 1) Intercepter ULTRA-TÔT les pré-flights OPTIONS
 app.use((req, res, next) => {
-  // Toujours pour le cache
   res.setHeader('Vary', 'Origin');
-
-  // Si ce n’est pas un pré-flight, on passe la main
   if (req.method !== 'OPTIONS') return next();
 
-  // Gestion OPTIONS immédiate
   const origin = (req.headers.origin || '').replace(/\/$/, '');
-  const allowed = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
+  const ok = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
 
-  if (allowed && origin) {
+  if (ok && origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
-  res.status(204).end(); // ← répond AVANT toute autre middleware/route
+  return res.status(204).end();
 });
 
-// 2) CORS pour les vraies requêtes (GET/POST/...)
+// 2) En-têtes CORS sur les vraies requêtes
 app.use((req, res, next) => {
   const origin = (req.headers.origin || '').replace(/\/$/, '');
-  const allowed = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
-
-  if (allowed && origin) {
+  const ok = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
+  if (ok && origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
-  res.setHeader('Vary', 'Origin'); // rappel
+  res.setHeader('Vary', 'Origin');
   next();
 });
 
-
+/* ───────────── Middlewares parsing ───────────── */
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '1mb' }));  
-
-// pour parser application/x-www-form-urlencoded (login sans pré-vol CORS)
+app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false }));
 
-  // Log propre si le pool rencontre un souci
-  pool.on('error', (err) => console.error('[pg] Pool error:', err));
-
-
-  // Arrêt propre (containers / PM2 / systemd)
-  function shutdown(signal) {
-    return async () => {
-      console.log(`\n${signal} reçu → fermeture des connexions…`)
-      try {
-        await pool.end()
-        console.log('Pool PostgreSQL fermé. Bye!')
-        process.exit(0)
-      } catch (e) {
-        console.error('Erreur à la fermeture du pool:', e)
-        process.exit(1)
-      }
+/* ───────────── Logs pool/arrêt propre ───────────── */
+pool.on('error', (err) => console.error('[pg] Pool error:', err));
+function shutdown(signal) {
+  return async () => {
+    console.log(`\n${signal} reçu → fermeture des connexions…`);
+    try {
+      await pool.end();
+      console.log('Pool PostgreSQL fermé. Bye!');
+      process.exit(0);
+    } catch (e) {
+      console.error('Erreur à la fermeture du pool:', e);
+      process.exit(1);
     }
-  }
-  process.on('SIGINT', shutdown('SIGINT'))
-  process.on('SIGTERM', shutdown('SIGTERM'))
+  };
+}
+process.on('SIGINT', shutdown('SIGINT'));
+process.on('SIGTERM', shutdown('SIGTERM'));
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
-// Sanity checks env
 if (!process.env.JWT_SECRET) {
-  console.warn('⚠️  JWT_SECRET manquant. Définis-le en production.')
+  console.warn('⚠️  JWT_SECRET manquant. Définis-le en production.');
 }
 
-// ─────────────────────────────────────────────────────────────
-// Middlewares AuthN/AuthZ
-// ─────────────────────────────────────────────────────────────
+/* ───────────── Routes utilitaires ───────────── */
+app.get('/__health', (req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
+});
+app.get('/__cors', (req, res) => {
+  const origin = (req.headers.origin || '').replace(/\/$/, '');
+  res.json({ origin, allowedOrigins: [...ALLOWED], method: req.method, headers: req.headers });
+});
+
+/* ───────────── Auth middlewares ───────────── */
 function authenticateToken(req, res, next) {
-  const authHeader = req.headers['authorization']
-  const token = authHeader && authHeader.split(' ')[1]
-  if (!token) return res.sendStatus(401)
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.sendStatus(401);
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) return res.sendStatus(403)
-    req.user = user
-    next()
-  })
+    if (err) return res.sendStatus(403);
+    req.user = user;
+    next();
+  });
 }
 function authorizeRoles(...roles) {
   return (req, res, next) => {
-    if (!req.user || !roles.includes(req.user.role)) return res.sendStatus(403)
-    next()
-  }
+    if (!req.user || !roles.includes(req.user.role)) return res.sendStatus(403);
+    next();
+  };
 }
+
 
 // ────────────────────────────────────────────────────────────f─
 // Healthcheck (optionnel) & démarrage
 // ─────────────────────────────────────────────────────────────
-app.get('/health', async (_req, res) => {
-  try {
-    const r = await pool.query('SELECT 1::int AS ok');
-    return res.json({ ok: true, db: String(r.rows?.[0]?.ok) === '1', v: 'h4' });
-  } catch (e) {
-    // log côté serveur (visible dans cPanel > Setup Node.js App > Error Log)
-    console.error('HEALTH ERROR:', e);
-    // renvoie un message utile même si e.message est vide
-    const msg = (e && (e.message || e.code || e.name)) || String(e || '');
-    return res.status(500).json({ ok: false, error: msg, v: 'h4' });
-  }
+app.get('/__health', (req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() });
 });
+
+const port = Number(process.env.PORT) || 3000;
+app.listen(port, '0.0.0.0', () => {
+  console.log(`API up on http://localhost:${port}`);
+});
+
+// pour capter toute erreur silencieuse
+process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
+
 
 app.get('/__cors', (req, res) => {
   const origin = (req.headers.origin || '').replace(/\/$/, '');
@@ -263,30 +263,50 @@ async function ensureSessionsForWeekday(classId, isoWeekday, startYear = schoolS
 // ─────────────────────────────────────────────────────────────
 // AUTH
 // ─────────────────────────────────────────────────────────────
+const DEV = (process.env.NODE_ENV || 'development') !== 'production';
+
 app.post('/login', async (req, res) => {
   try {
-    const { username, password } = req.body
-    if (!username || !password)
-      return res.status(400).json({ message: 'Username et mot de passe requis' })
+    const { username, password } = req.body || {};
+    if (!username || !password) {
+      return res.status(400).json({ message: 'Username et mot de passe requis' });
+    }
 
-    const result = await pool.query('SELECT * FROM users WHERE username = $1', [username.trim()])
-    if (result.rows.length === 0) return res.status(401).json({ message: 'Utilisateur non trouvé' })
+    // ⚠️ schéma explicite pour éviter “relation does not exist”
+    const q = `
+      SELECT id, username, role, password
+      FROM public.users
+      WHERE lower(username) = lower($1)
+      LIMIT 1
+    `;
+    const { rows } = await pool.query(q, [String(username).trim()]);
+    if (rows.length === 0) {
+      return res.status(401).json({ message: 'Utilisateur non trouvé' });
+    }
 
-    const user = result.rows[0]
-    const validPassword = await bcrypt.compare(password, user.password)
-    if (!validPassword) return res.status(401).json({ message: 'Mot de passe incorrect' })
+    const user = rows[0];
+
+    // bcryptjs = compareSync (sinon promisifier)
+    const ok = bcrypt.compareSync(String(password), user.password);
+    if (!ok) {
+      return res.status(401).json({ message: 'Mot de passe incorrect' });
+    }
 
     const token = jwt.sign(
       { id: user.id, username: user.username, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: '8h' },
-    )
-    res.json({ token, user: { id: user.id, username: user.username, role: user.role } })
+      { expiresIn: '8h' }
+    );
+
+    return res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
   } catch (err) {
-    console.error('Erreur serveur login:', err)
-    res.status(500).json({ message: 'Erreur serveur' })
+    console.error('Erreur serveur login:', err);
+    // En dev on renvoie le détail pour diagnostiquer
+    if (DEV) return res.status(500).json({ message: 'Erreur serveur', code: err.code, detail: err.message });
+    return res.status(500).json({ message: 'Erreur serveur' });
   }
-})
+});
+
 
 // ─────────────────────────────────────────────────────────────
 // ADMIN API
