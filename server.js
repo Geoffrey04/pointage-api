@@ -21,7 +21,7 @@ const cors = require('cors'); // présent si tu veux l’utiliser ailleurs
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');       // sécurise le boot (Windows/Node 22)
 const pg = require('pg');
-const { Pool } = require('pg');
+// const { Pool } = require('pg');
 const pool = require('./db'); // <-- on importe le pool prêt à l’emploi
 
 
