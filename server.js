@@ -16,13 +16,17 @@ console.log('Boot node app… NODE_ENV=%s', process.env.NODE_ENV);
 console.log('PORT fourni par l’hébergeur =', process.env.PORT);
 
 require('dotenv').config();
-const pool = require('./db');
+let pool;
+try {
+  pool = require('./db');
+} catch (e) {
+  console.error('[boot] échec require("./db") :', e);
+}
 const express = require('express');
 const cors = require('cors'); // présent si tu veux l’utiliser ailleurs
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');       // sécurise le boot (Windows/Node 22)
 const pg = require('pg');
- const { Pool } = require('pg');
 
 
 // Forcer les DATE Postgres (OID 1082) -> 'YYYY-MM-DD'
@@ -102,8 +106,6 @@ async function shutdown(signal) {
 
 process.on('SIGINT', shutdown('SIGINT'));
 process.on('SIGTERM', shutdown('SIGTERM'));
-process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
-process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
 if (!process.env.JWT_SECRET) {
   console.warn('⚠️  JWT_SECRET manquant. Définis-le en production.');
@@ -140,24 +142,12 @@ function authorizeRoles(...roles) {
 // ────────────────────────────────────────────────────────────f─
 // Healthcheck (optionnel) & démarrage
 // ─────────────────────────────────────────────────────────────
-app.get('/__health', (req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
-});
 
 // pour capter toute erreur silencieuse
 process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
 process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
 
-app.get('/__cors', (req, res) => {
-  const origin = (req.headers.origin || '').replace(/\/$/, '');
-  res.json({
-    origin,
-    allowedOrigins: [...ALLOWED],
-    method: req.method,
-    headers: req.headers,
-  });
-});
 
 
 // ─────────────────────────────────────────────────────────────
