@@ -5,7 +5,11 @@ const cors = require('cors'); // présent si tu veux l’utiliser ailleurs
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');       // sécurise le boot (Windows/Node 22)
 const pg = require('pg');
-const pool = require('./db');             // Pool Neon (@neondatabase/serverless)
+const { Pool } = require('pg');
+module.exports = new Pool({
+  connectionString: process.env.DATABASE_URL, // URL AVEC -pooler
+  ssl: { rejectUnauthorized: false },
+});            // Pool Neon (@neondatabase/serverless)
 
 // Forcer les DATE Postgres (OID 1082) -> 'YYYY-MM-DD'
 pg.types.setTypeParser(1082, v => v);
@@ -13,7 +17,12 @@ pg.types.setTypeParser(1082, v => v);
 
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+// --- DÉMARRAGE (une seule écoute) ---
+const PORT = process.env.PORT || 3000; // Passenger fournit PORT en prod
+app.listen(PORT, () => {
+  console.log(`✅ API up on port ${PORT}`);
+});
+
 
 /* ───────────── CORS : whitelist via .env (CORS_ORIGINS) ───────────── */
 const ALLOWED = new Set(
@@ -114,11 +123,6 @@ function authorizeRoles(...roles) {
 // ─────────────────────────────────────────────────────────────
 app.get('/__health', (req, res) => {
   res.json({ ok: true, time: new Date().toISOString() });
-});
-
-const port = Number(process.env.PORT) || 3000;
-app.listen(port, '0.0.0.0', () => {
-  console.log(`API up on http://localhost:${port}`);
 });
 
 // pour capter toute erreur silencieuse
