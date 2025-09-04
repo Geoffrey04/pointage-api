@@ -20,13 +20,16 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));  // ✅ pas besoin de body-parser
 
 // Whitelist depuis la variable d'env CORS_ORIGINS
-// ---- CORS (une seule implémentation, gère aussi la pré-requête) ----
+// accepte CORS_ORIGINS (pluriel) ou CORS_ORIGIN (singulier)
+const rawAllowed = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '');
+
 const ALLOWED = new Set(
-  String(process.env.CORS_ORIGINS || 'https://emm-pointage.fr,https://www.emm-pointage.fr')
+  rawAllowed
     .split(',')
     .map(s => s.trim().replace(/\/$/, ''))
     .filter(Boolean)
 );
+
 
 app.use((req, res, next) => { res.setHeader('Vary', 'Origin'); next(); });
 
