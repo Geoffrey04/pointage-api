@@ -28,13 +28,26 @@ const cors = require('cors'); // présent si tu veux l’utiliser ailleurs
 const jwt = require('jsonwebtoken');
 let bcrypt;
 try {
-  console.log('[boot] bcryptjs path =', require.resolve('bcryptjs'));
   bcrypt = require('bcryptjs');
+  console.log('[boot] bcryptjs via require("bcryptjs") OK →', require.resolve('bcryptjs'));
 } catch (e) {
-  console.error('[boot] bcryptjs introuvable :', e);
-  // (optionnel) fallback absolu si jamais :
-  // bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs');
+  console.error('[boot] require("bcryptjs") a échoué :', e && e.code, e && e.message);
+  try {
+    // fallback 1: paquet à la racine du nodevenv
+    bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs');
+    console.log('[boot] bcryptjs via chemin absolu (pkg) OK');
+  } catch (e2) {
+    try {
+      // fallback 2: entrée UMD (chemin exact que tu as résolu à la main)
+      bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs/umd/index.js');
+      console.log('[boot] bcryptjs via chemin absolu UMD OK');
+    } catch (e3) {
+      console.error('[boot] bcryptjs tous les fallbacks ont échoué :', e3 && e3.message);
+      throw e3; // on stoppe net si rien ne marche, Passenger montrera l’erreur
+    }
+  }
 }
+
 
 const pg = require('pg');
 
