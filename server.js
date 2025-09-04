@@ -1,4 +1,20 @@
 // server.js (version prod corrigée)
+
+// --- DOIT ÊTRE TOUT EN HAUT ---
+// 1) Swallow d'un warning Undici/llhttp en environnement mutualisé (WASM)
+process.on('unhandledRejection', (err) => {
+  const msg = String(err && (err.message || err));
+  if (/WebAssembly\.instantiate|Wasm memory/.test(msg)) {
+    console.warn('[ignored wasm init error]', msg);
+    return;
+  }
+  console.error('[unhandledRejection]', err);
+});
+
+// 2) un peu de logs de démarrage (Passenger te les remontera)
+console.log('Boot node app… NODE_ENV=%s', process.env.NODE_ENV);
+console.log('PORT fourni par l’hébergeur =', process.env.PORT);
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors'); // présent si tu veux l’utiliser ailleurs
