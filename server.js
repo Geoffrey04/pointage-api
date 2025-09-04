@@ -1,7 +1,6 @@
 // server.js (version prod corrigée)
 
 // --- DOIT ÊTRE TOUT EN HAUT ---
-// 1) Swallow d'un warning Undici/llhttp en environnement mutualisé (WASM)
 process.on('unhandledRejection', (err) => {
   const msg = String(err && (err.message || err));
   if (/WebAssembly\.instantiate|Wasm memory/.test(msg)) {
@@ -10,6 +9,8 @@ process.on('unhandledRejection', (err) => {
   }
   console.error('[unhandledRejection]', err);
 });
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
+
 
 // 2) un peu de logs de démarrage (Passenger te les remontera)
 console.log('Boot node app… NODE_ENV=%s', process.env.NODE_ENV);
@@ -25,7 +26,16 @@ try {
 const express = require('express');
 const cors = require('cors'); // présent si tu veux l’utiliser ailleurs
 const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');       // sécurise le boot (Windows/Node 22)
+let bcrypt;
+try {
+  console.log('[boot] bcryptjs path =', require.resolve('bcryptjs'));
+  bcrypt = require('bcryptjs');
+} catch (e) {
+  console.error('[boot] bcryptjs introuvable :', e);
+  // (optionnel) fallback absolu si jamais :
+  // bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs');
+}
+
 const pg = require('pg');
 
 
@@ -137,17 +147,6 @@ function authorizeRoles(...roles) {
     next();
   };
 }
-
-
-// ────────────────────────────────────────────────────────────f─
-// Healthcheck (optionnel) & démarrage
-// ─────────────────────────────────────────────────────────────
-
-// pour capter toute erreur silencieuse
-process.on('unhandledRejection', (e) => console.error('[unhandledRejection]', e));
-process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
-
-
 
 
 // ─────────────────────────────────────────────────────────────
