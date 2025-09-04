@@ -6,10 +6,8 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');       // sécurise le boot (Windows/Node 22)
 const pg = require('pg');
 const { Pool } = require('pg');
-module.exports = new Pool({
-  connectionString: process.env.DATABASE_URL, // URL AVEC -pooler
-  ssl: { rejectUnauthorized: false },
-});            // Pool Neon (@neondatabase/serverless)
+const pool = require('./db'); // <-- on importe le pool prêt à l’emploi
+
 
 // Forcer les DATE Postgres (OID 1082) -> 'YYYY-MM-DD'
 pg.types.setTypeParser(1082, v => v);
@@ -19,10 +17,6 @@ pg.types.setTypeParser(1082, v => v);
 const app = express();
 // --- DÉMARRAGE (une seule écoute) ---
 const PORT = process.env.PORT || 3000; // Passenger fournit PORT en prod
-app.listen(PORT, () => {
-  console.log(`✅ API up on port ${PORT}`);
-});
-
 
 /* ───────────── CORS : whitelist via .env (CORS_ORIGINS) ───────────── */
 const ALLOWED = new Set(
@@ -1048,5 +1042,5 @@ app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 
 
 app.listen(PORT, () => {
-  console.log(`✅ Serveur démarré sur http://localhost:${PORT}`)
-})
+  console.log(`✅ Serveur démarré sur ${PORT}`)
+});
