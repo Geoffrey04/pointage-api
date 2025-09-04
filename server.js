@@ -16,56 +16,54 @@ pg.types.setTypeParser(1082, (v) => v);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.set('trust proxy', 1);
-app.use(express.json({ limit: '1mb' }));  
-
-// pour parser application/x-www-form-urlencoded (login sans pré-vol CORS)
-app.use(express.urlencoded({ extended: false }));
-
-// ---- CORS "manuel" (tout en haut) ----
+// --- CORS de base : whitelist via .env, handle OPTIONS en priorité ---
 const rawAllowed = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '')
   .split(',')
   .map(s => s.trim().replace(/\/$/, ''))
   .filter(Boolean);
+const ALLOWED = new Set(rawAllowed);
 
-const allowedSet = new Set(rawAllowed);
-
+// 1) Interception ULTRA TÔT des pré-flights OPTIONS (évite tout 500)
 app.use((req, res, next) => {
-  res.setHeader('Vary', 'Origin');               // pour les caches/CDN
+  // Toujours pour le cache
+  res.setHeader('Vary', 'Origin');
+
+  // Si ce n’est pas un pré-flight, on passe la main
+  if (req.method !== 'OPTIONS') return next();
+
+  // Gestion OPTIONS immédiate
   const origin = (req.headers.origin || '').replace(/\/$/, '');
   const allowed = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
 
   if (allowed && origin) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   }
-  if (req.method === 'OPTIONS') return res.status(204).end();  // répond au pré-vol
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
+  res.status(204).end(); // ← répond AVANT toute autre middleware/route
+});
+
+// 2) CORS pour les vraies requêtes (GET/POST/...)
+app.use((req, res, next) => {
+  const origin = (req.headers.origin || '').replace(/\/$/, '');
+  const allowed = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
+
+  if (allowed && origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+  res.setHeader('Vary', 'Origin'); // rappel
   next();
 });
 
-const corsOptions = {
-  origin: (origin, cb) => {
-    // Requêtes serveur-serveur (curl/cron) n'ont pas d'Origin → on autorise
-    if (!origin) return cb(null, true);
-    const o = origin.replace(/\/$/, '');
-    const ok = allowedSet.size === 0 || allowedSet.has(o);
-    if (ok) return cb(null, true);
-    // on refuse silencieusement (le navigateur bloquera), mais on log pour debug
-    console.warn(`[CORS] Origin refusée: ${origin}`);
-    return cb(null, false);
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With'],
-  optionsSuccessStatus: 204,
-  maxAge: 86400, // 24h
-};
 
-app.use(cors(corsOptions));
-// gère explicitement tous les pré-vols (OPTIONS) pour éviter les 500
-app.options('*', cors(corsOptions));
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '1mb' }));  
+
+// pour parser application/x-www-form-urlencoded (login sans pré-vol CORS)
+app.use(express.urlencoded({ extended: false }));
+
   // Log propre si le pool rencontre un souci
   pool.on('error', (err) => console.error('[pg] Pool error:', err));
 
@@ -126,6 +124,16 @@ app.get('/health', async (_req, res) => {
     const msg = (e && (e.message || e.code || e.name)) || String(e || '');
     return res.status(500).json({ ok: false, error: msg, v: 'h4' });
   }
+});
+
+app.get('/__cors', (req, res) => {
+  const origin = (req.headers.origin || '').replace(/\/$/, '');
+  res.json({
+    origin,
+    allowedOrigins: [...ALLOWED],
+    method: req.method,
+    headers: req.headers,
+  });
 });
 
 
