@@ -19,21 +19,15 @@ const PORT = Number(process.env.PORT) || 3000;
 app.set('trust proxy', 1);
 app.use(express.json({ limit: '1mb' }));  // ✅ pas besoin de body-parser
 
-// Whitelist depuis la variable d'env CORS_ORIGINS
-// accepte CORS_ORIGINS (pluriel) ou CORS_ORIGIN (singulier)
+  // Whitelist depuis la variable d'env CORS_ORIGINS
+// ---- CORS "manuel" (tout en haut) ----
 const rawAllowed = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '');
-
 const ALLOWED = new Set(
-  rawAllowed
-    .split(',')
-    .map(s => s.trim().replace(/\/$/, ''))
-    .filter(Boolean)
+  rawAllowed.split(',').map(s => s.trim().replace(/\/$/, '')).filter(Boolean)
 );
 
-
-app.use((req, res, next) => { res.setHeader('Vary', 'Origin'); next(); });
-
 app.use((req, res, next) => {
+  res.setHeader('Vary', 'Origin');               // pour les caches/CDN
   const origin = (req.headers.origin || '').replace(/\/$/, '');
   const allowed = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
 
@@ -43,31 +37,30 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   }
-  if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method === 'OPTIONS') return res.status(204).end();  // répond au pré-vol
   next();
 });
-// ---------------------------------------------------------------
 
-// Log propre si le pool rencontre un souci
-pool.on('error', (err) => console.error('[pg] Pool error:', err));
+  // Log propre si le pool rencontre un souci
+  pool.on('error', (err) => console.error('[pg] Pool error:', err));
 
 
-// Arrêt propre (containers / PM2 / systemd)
-function shutdown(signal) {
-  return async () => {
-    console.log(`\n${signal} reçu → fermeture des connexions…`)
-    try {
-      await pool.end()
-      console.log('Pool PostgreSQL fermé. Bye!')
-      process.exit(0)
-    } catch (e) {
-      console.error('Erreur à la fermeture du pool:', e)
-      process.exit(1)
+  // Arrêt propre (containers / PM2 / systemd)
+  function shutdown(signal) {
+    return async () => {
+      console.log(`\n${signal} reçu → fermeture des connexions…`)
+      try {
+        await pool.end()
+        console.log('Pool PostgreSQL fermé. Bye!')
+        process.exit(0)
+      } catch (e) {
+        console.error('Erreur à la fermeture du pool:', e)
+        process.exit(1)
+      }
     }
   }
-}
-process.on('SIGINT', shutdown('SIGINT'))
-process.on('SIGTERM', shutdown('SIGTERM'))
+  process.on('SIGINT', shutdown('SIGINT'))
+  process.on('SIGTERM', shutdown('SIGTERM'))
 
 // Sanity checks env
 if (!process.env.JWT_SECRET) {
