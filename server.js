@@ -17,6 +17,13 @@ console.log('Boot node app… NODE_ENV=%s', process.env.NODE_ENV);
 console.log('PORT fourni par l’hébergeur =', process.env.PORT);
 
 require('dotenv').config();
+// --- forcer la résolution des modules pour Passenger ---
+const Module = require('module');
+const EXTRA_NODE_PATH = '/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules';
+process.env.NODE_PATH = [process.env.NODE_PATH, EXTRA_NODE_PATH].filter(Boolean).join(':');
+Module._initPaths();
+console.log('[boot] NODE_PATH ->', process.env.NODE_PATH);
+
 let pool;
 try {
   pool = require('./db');
