@@ -13,6 +13,10 @@ process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 
 
 // 2) un peu de logs de démarrage (Passenger te les remontera)
+console.log('[boot] marker v2025-09-05-01:20');
+console.log('[boot] __filename =', __filename);
+console.log('[boot] cwd        =', process.cwd());
+
 console.log('Boot node app… NODE_ENV=%s', process.env.NODE_ENV);
 console.log('PORT fourni par l’hébergeur =', process.env.PORT);
 
