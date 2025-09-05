@@ -21,10 +21,17 @@ console.log('Boot node app… NODE_ENV=%s', process.env.NODE_ENV);
 console.log('PORT fourni par l’hébergeur =', process.env.PORT);
 
 require('dotenv').config();
-// --- forcer la résolution des modules pour Passenger ---
+// --- forcer la résolution des modules (local d'abord) ---
+const path = require('path');
 const Module = require('module');
 const EXTRA_NODE_PATH = '/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules';
-process.env.NODE_PATH = [process.env.NODE_PATH, EXTRA_NODE_PATH].filter(Boolean).join(':');
+
+process.env.NODE_PATH = [
+  path.join(__dirname, 'node_modules'), // priorité au node_modules local de l'app
+  process.env.NODE_PATH,                 // ce que Passenger aurait déjà mis
+  EXTRA_NODE_PATH                        // secours : modules globaux du nodevenv
+].filter(Boolean).join(':');
+
 Module._initPaths();
 console.log('[boot] NODE_PATH ->', process.env.NODE_PATH);
 
@@ -50,8 +57,7 @@ try {
   } catch (e2) {
     try {
       // fallback 2: entrée UMD (chemin exact que tu as résolu à la main)
-      bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs/umd/index.js');
-      console.log('[boot] bcryptjs via chemin absolu UMD OK');
+       bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs/dist/bcrypt.min.js');      console.log('[boot] bcryptjs via chemin absolu UMD OK');
     } catch (e3) {
       console.error('[boot] bcryptjs tous les fallbacks ont échoué :', e3 && e3.message);
       throw e3; // on stoppe net si rien ne marche, Passenger montrera l’erreur
