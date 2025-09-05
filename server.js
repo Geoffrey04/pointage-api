@@ -128,7 +128,8 @@ if (pool && typeof pool.on === 'function') {
   console.error('[boot] pool indisponible au démarrage');
 }
 
-async function shutdown(signal) {
+// Remplacer votre version par celle-ci (note: la fonction extérieure n'est pas async)
+function shutdown(signal) {
   return async () => {
     console.log(`\n${signal} reçu → fermeture des connexions…`);
     try {
@@ -144,8 +145,9 @@ async function shutdown(signal) {
   };
 }
 
-process.on('SIGINT', shutdown('SIGINT'));
+process.on('SIGINT',  shutdown('SIGINT'));
 process.on('SIGTERM', shutdown('SIGTERM'));
+
 
 if (!process.env.JWT_SECRET) {
   console.warn('⚠️  JWT_SECRET manquant. Définis-le en production.');
