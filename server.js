@@ -1,7 +1,4 @@
 // server.js (version prod corrigée)
-console.log('[boot] MARKER 2025-09-05T17:50Z');
-console.log('[boot] __filename =', __filename);
-console.log('[boot] cwd        =', process.cwd());
 
 // --- DOIT ÊTRE TOUT EN HAUT ---
 process.on('unhandledRejection', (err) => {
@@ -24,15 +21,19 @@ console.log('Boot node app… NODE_ENV=%s', process.env.NODE_ENV);
 console.log('PORT fourni par l’hébergeur =', process.env.PORT);
 
 require('dotenv').config();
-// --- forcer la résolution des modules pour Passenger ---
+// --- forcer la résolution des modules (local d'abord) ---
+const path = require('path');
 const Module = require('module');
 const EXTRA_NODE_PATH = '/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules';
-process.env.NODE_PATH = [process.env.NODE_PATH, EXTRA_NODE_PATH].filter(Boolean).join(':');
+
+process.env.NODE_PATH = [
+  path.join(__dirname, 'node_modules'), // priorité au node_modules local de l'app
+  process.env.NODE_PATH,                 // ce que Passenger aurait déjà mis
+  EXTRA_NODE_PATH                        // secours : modules globaux du nodevenv
+].filter(Boolean).join(':');
+
 Module._initPaths();
 console.log('[boot] NODE_PATH ->', process.env.NODE_PATH);
-// Force IPv4 d'abord (évite les timeouts IPv6)
-try { require('dns').setDefaultResultOrder('ipv4first'); } catch {}
-
 
 let pool;
 try {
@@ -56,8 +57,7 @@ try {
   } catch (e2) {
     try {
       // fallback 2: entrée UMD (chemin exact que tu as résolu à la main)
-      bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs/umd/index.js');
-      console.log('[boot] bcryptjs via chemin absolu UMD OK');
+       bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs/dist/bcrypt.min.js');      console.log('[boot] bcryptjs via chemin absolu UMD OK');
     } catch (e3) {
       console.error('[boot] bcryptjs tous les fallbacks ont échoué :', e3 && e3.message);
       throw e3; // on stoppe net si rien ne marche, Passenger montrera l’erreur
@@ -331,28 +331,10 @@ app.post('/login', async (req, res) => {
     const user = rows[0];
 
     // bcryptjs = compareSync (sinon promisifier)
-   // Migration douce des anciens mots de passe (non-bcrypt)
-const stored = String(user.password || '');
-let ok = false;
-
-if (/^\$2[aby]\$/.test(stored)) {
-  // Hash bcrypt → comparer avec bcrypt
-  ok = bcrypt.compareSync(String(password), stored);
-} else {
-  // Ancien stockage (clair ou autre) → comparer en clair
-  ok = String(password) === stored;
-  // Si OK, migrer immédiatement vers bcrypt
-  if (ok) {
-    const newHash = bcrypt.hashSync(String(password), 10);
-    await pool.query('UPDATE public.users SET password = $1 WHERE id = $2', [newHash, user.id]);
-    console.log('[login] password migrated → bcrypt for', user.username);
-  }
-}
-
-if (!ok) {
-  return res.status(401).json({ message: 'Mot de passe incorrect' });
-}
-
+    const ok = bcrypt.compareSync(String(password), user.password);
+    if (!ok) {
+      return res.status(401).json({ message: 'Mot de passe incorrect' });
+    }
 
     const token = jwt.sign(
       { id: user.id, username: user.username, role: user.role },
@@ -1100,18 +1082,6 @@ app.post(
     }
   },
 )
-
-// Page d'accueil pour le check cPanel (200 text/html)
-app.get('/', (_req, res) => {
-  res.type('html').send(`<!doctype html>
-<html><head><meta charset="utf-8"><title>API</title></head>
-<body>
-  <h1>Music Attendance API</h1>
-  <p>Status: OK</p>
-  <p><a href="/__health">__health</a></p>
-</body></html>`);
-});
-
 
 /** 404 par défaut */
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
