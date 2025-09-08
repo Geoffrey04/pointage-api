@@ -1,0 +1,31 @@
+# --- CORS côté Apache pour l’API ---
+
+# Autoriser UNIQUEMENT ton front prod
+<IfModule mod_setenvif.c>
+  SetEnvIf Origin "^https://(emm-pointage\.fr|www\.emm-pointage\.fr)$" ACAO=$0
+</IfModule>
+
+# En-têtes CORS sur toutes les réponses (même 4xx/5xx)
+<IfModule mod_headers.c>
+  Header always set Access-Control-Allow-Origin "%{ACAO}e" env=ACAO
+  Header always set Access-Control-Allow-Credentials "true" env=ACAO
+  Header always set Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" env=ACAO
+  Header always set Access-Control-Allow-Headers "Authorization,Content-Type,Accept,X-Requested-With" env=ACAO
+  Header always set Vary "Origin"
+  Header always set Access-Control-Max-Age "86400" env=ACAO
+</IfModule>
+
+# Répondre directement aux préflights OPTIONS (204)
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteCond %{REQUEST_METHOD} =OPTIONS
+  RewriteRule ^ - [R=204,L]
+</IfModule>
+
+# (Laisse ces lignes COMMENTÉES si cPanel gère déjà Passenger)
+# <IfModule mod_passenger.c>
+#   PassengerAppRoot /home/<user>/apps/pointage-api
+#   PassengerAppType node
+#   PassengerStartupFile server.js
+#   PassengerEnvVar NODE_ENV production
+# </IfModule>

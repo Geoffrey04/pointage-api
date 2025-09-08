@@ -4,6 +4,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+pnpm-lock.yaml
 dist/
 build/
 
@@ -11,8 +12,28 @@ build/
 .env
 .env.*
 .DS_Store
+*.local
 
 # OS / IDE
 Thumbs.db
 .vscode/
 .idea/
+
+# Logs & tmp
+logs/
+*.log
+tmp/
+pids/
+coverage/
+.DS_Store
+# --- deps & backups ---
+node_modules/
+node_modules          # <— symlink éventuel
+node_modules.bak*/
+node_modules.bak.*/
+*.bak
+
+# lockfiles nichés (ex: backups)
+**/.package-lock.json
+node_modules
+probe.js
