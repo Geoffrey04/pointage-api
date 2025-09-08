@@ -36,3 +36,4 @@ node_modules.bak.*/
 # lockfiles nichés (ex: backups)
 **/.package-lock.json
 node_modules
+probe.js
