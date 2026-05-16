@@ -85,9 +85,12 @@ function addFicheInscription(doc, data) {
   y = doc.y + 8
   yesNoField(doc, L + 8, y, "Inscrit a d'autres activites", data.observations.autresActivitesOui)
   if (data.observations.autresActivitesOui) {
-    field(doc, L + 28, y + 18, 'Lesquelles', data.observations.autresActivitesDetail, 100)
-    field(doc, L + 160, y + 18, 'Endroit',   data.observations.autresActivitesEndroit, 100)
-    y += 42
+    const acts = data.observations.autresActivites || []
+    acts.forEach((a, i) => {
+      field(doc, L + 28,  y + 18 + i * 22, 'Activite', a.activite, 100)
+      field(doc, L + 160, y + 18 + i * 22, 'Endroit',  a.endroit,  100)
+    })
+    y += 18 + (acts.length || 1) * 22 + 4
   } else { y += 22 }
   field(doc, L + 8, y, 'Informations complementaires', data.observations.complement, W - 16)
   doc.y = y + 30
