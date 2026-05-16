@@ -1,210 +1,299 @@
-// server.js (version prod corrigée)
-
-// --- DOIT ÊTRE TOUT EN HAUT ---
+// ─────────────────────────────────────────────────────────────
+// Gestionnaires d'erreurs globaux (à déclarer en tout premier)
+// ─────────────────────────────────────────────────────────────
 process.on('unhandledRejection', (err) => {
-  const msg = String(err && (err.message || err));
+  const msg = String(err && (err.message || err))
   if (/WebAssembly\.instantiate|Wasm memory/.test(msg)) {
-    console.warn('[ignored wasm init error]', msg);
-    return;
+    console.warn('[ignored wasm init error]', msg)
+    return
   }
-  console.error('[unhandledRejection]', err);
-});
-process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
+  console.error('[unhandledRejection]', err)
+})
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e))
 
+console.log('[boot] démarrage — NODE_ENV=%s PORT=%s', process.env.NODE_ENV, process.env.PORT)
 
-// 2) un peu de logs de démarrage (Passenger te les remontera)
-console.log('[boot] marker v2025-09-05-01:20');
-console.log('[boot] __filename =', __filename);
-console.log('[boot] cwd        =', process.cwd());
+require('dotenv').config()
 
-console.log('Boot node app… NODE_ENV=%s', process.env.NODE_ENV);
-console.log('PORT fourni par l’hébergeur =', process.env.PORT);
-
-require('dotenv').config();
-// --- forcer la résolution des modules (local d'abord) ---
-const path = require('path');
-const Module = require('module');
-const EXTRA_NODE_PATH = '/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules';
+// ─────────────────────────────────────────────────────────────
+// Résolution des modules : priorité au node_modules local,
+// puis au répertoire nodevenv de l'hébergeur (Passenger).
+// ─────────────────────────────────────────────────────────────
+const path = require('path')
+const Module = require('module')
+const EXTRA_NODE_PATH = '/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules'
 
 process.env.NODE_PATH = [
-  path.join(__dirname, 'node_modules'), // priorité au node_modules local de l'app
-  process.env.NODE_PATH,                 // ce que Passenger aurait déjà mis
-  EXTRA_NODE_PATH                        // secours : modules globaux du nodevenv
-].filter(Boolean).join(':');
+  path.join(__dirname, 'node_modules'),
+  process.env.NODE_PATH,
+  EXTRA_NODE_PATH,
+].filter(Boolean).join(':')
 
-Module._initPaths();
-console.log('[boot] NODE_PATH ->', process.env.NODE_PATH);
+Module._initPaths()
 
-let pool;
+// ─────────────────────────────────────────────────────────────
+// Chargement des dépendances critiques
+// ─────────────────────────────────────────────────────────────
+let pool
 try {
-  pool = require('./db');
+  pool = require('./db')
 } catch (e) {
-  console.error('[boot] échec require("./db") :', e);
+  console.error('[boot] échec du chargement de ./db :', e)
 }
-const express = require('express');
-const cors = require('cors'); // présent si tu veux l’utiliser ailleurs
-const jwt = require('jsonwebtoken');
-let bcrypt;
+
+const express = require('express')
+const jwt = require('jsonwebtoken')
+const inscriptionRouter = require('./routes/inscription')
+
+let bcrypt
 try {
-  bcrypt = require('bcryptjs');
-  console.log('[boot] bcryptjs via require("bcryptjs") OK →', require.resolve('bcryptjs'));
+  bcrypt = require('bcryptjs')
 } catch (e) {
-  console.error('[boot] require("bcryptjs") a échoué :', e && e.code, e && e.message);
   try {
-    // fallback 1: paquet à la racine du nodevenv
-    bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs');
-    console.log('[boot] bcryptjs via chemin absolu (pkg) OK');
+    bcrypt = require(`${EXTRA_NODE_PATH}/bcryptjs`)
   } catch (e2) {
     try {
-      // fallback 2: entrée UMD (chemin exact que tu as résolu à la main)
-       bcrypt = require('/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules/bcryptjs/dist/bcrypt.min.js');      console.log('[boot] bcryptjs via chemin absolu UMD OK');
+      bcrypt = require(`${EXTRA_NODE_PATH}/bcryptjs/dist/bcrypt.min.js`)
     } catch (e3) {
-      console.error('[boot] bcryptjs tous les fallbacks ont échoué :', e3 && e3.message);
-      throw e3; // on stoppe net si rien ne marche, Passenger montrera l’erreur
+      console.error('[boot] impossible de charger bcryptjs :', e3?.message)
+      throw e3
     }
   }
 }
 
+const pg = require('pg')
 
-const pg = require('pg');
+// Les colonnes de type DATE (OID 1082) sont renvoyées en chaîne 'YYYY-MM-DD'
+// plutôt que converties en objet Date JavaScript.
+pg.types.setTypeParser(1082, (v) => v)
 
+if (!process.env.JWT_SECRET) {
+  console.warn('⚠️  JWT_SECRET manquant — à définir en production.')
+}
 
-// Forcer les DATE Postgres (OID 1082) -> 'YYYY-MM-DD'
-pg.types.setTypeParser(1082, v => v);
+// ─────────────────────────────────────────────────────────────
+// Configuration Express
+// ─────────────────────────────────────────────────────────────
+const app = express()
+const PORT = process.env.PORT || 3000
 
+app.set('trust proxy', 1)
+app.use(express.json({ limit: '2mb' }))
+app.use(express.urlencoded({ extended: false }))
 
-
-const app = express();
-// --- DÉMARRAGE (une seule écoute) ---
-const PORT = process.env.PORT || 3000; // Passenger fournit PORT en prod
-
-/* ───────────── CORS : whitelist via .env (CORS_ORIGINS) ───────────── */
+// ─────────────────────────────────────────────────────────────
+// CORS : origines autorisées via la variable d'env CORS_ORIGINS
+// ─────────────────────────────────────────────────────────────
 const ALLOWED = new Set(
   String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '')
     .split(',')
-    .map(s => s.trim().replace(/\/$/, ''))
-    .filter(Boolean)
-);
+    .map((s) => s.trim().replace(/\/$/, ''))
+    .filter(Boolean),
+)
 
-// 1) Intercepter ULTRA-TÔT les pré-flights OPTIONS
+// Pré-flight OPTIONS intercepté avant tout autre middleware
 app.use((req, res, next) => {
-  res.setHeader('Vary', 'Origin');
-  if (req.method !== 'OPTIONS') return next();
+  res.setHeader('Vary', 'Origin')
+  if (req.method !== 'OPTIONS') return next()
 
-  const origin = (req.headers.origin || '').replace(/\/$/, '');
-  const ok = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
+  const origin = (req.headers.origin || '').replace(/\/$/, '')
+  const ok = !origin || ALLOWED.size === 0 || ALLOWED.has(origin)
 
   if (ok && origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
-  return res.status(204).end();
-});
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With')
+  return res.status(204).end()
+})
 
-// 2) En-têtes CORS sur les vraies requêtes
+// En-têtes CORS sur les requêtes normales
 app.use((req, res, next) => {
-  const origin = (req.headers.origin || '').replace(/\/$/, '');
-  const ok = !origin || ALLOWED.size === 0 || ALLOWED.has(origin);
+  const origin = (req.headers.origin || '').replace(/\/$/, '')
+  const ok = !origin || ALLOWED.size === 0 || ALLOWED.has(origin)
   if (ok && origin) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
   }
-  res.setHeader('Vary', 'Origin');
-  next();
-});
+  res.setHeader('Vary', 'Origin')
+  next()
+})
 
-/* ───────────── Middlewares parsing ───────────── */
-app.set('trust proxy', 1);
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: false }));
-
-/* ───────────── Logs pool/arrêt propre ───────────── */
-// nouveau (safe)
+// ─────────────────────────────────────────────────────────────
+// Surveillance du pool PostgreSQL + arrêt propre
+// ─────────────────────────────────────────────────────────────
 if (pool && typeof pool.on === 'function') {
-  pool.on('error', (err) => console.error('[pg] Pool error:', err));
+  pool.on('error', (err) => console.error('[pg] Pool error:', err))
 } else {
-  console.error('[boot] pool indisponible au démarrage');
+  console.error('[boot] pool PostgreSQL indisponible au démarrage')
 }
 
-// Remplacer votre version par celle-ci (note: la fonction extérieure n'est pas async)
 function shutdown(signal) {
   return async () => {
-    console.log(`\n${signal} reçu → fermeture des connexions…`);
+    console.log(`${signal} reçu — fermeture du pool PostgreSQL…`)
     try {
       if (pool && typeof pool.end === 'function') {
-        await pool.end();
-        console.log('Pool PostgreSQL fermé. Bye!');
+        await pool.end()
+        console.log('Pool PostgreSQL fermé.')
       }
-      process.exit(0);
+      process.exit(0)
     } catch (e) {
-      console.error('Erreur à la fermeture du pool:', e);
-      process.exit(1);
+      console.error('Erreur à la fermeture du pool :', e)
+      process.exit(1)
     }
-  };
+  }
 }
 
-process.on('SIGINT',  shutdown('SIGINT'));
-process.on('SIGTERM', shutdown('SIGTERM'));
+process.on('SIGINT', shutdown('SIGINT'))
+process.on('SIGTERM', shutdown('SIGTERM'))
 
+// ─────────────────────────────────────────────────────────────
+// Routes utilitaires (santé + diagnostic)
+// ─────────────────────────────────────────────────────────────
+app.get('/__health', (_req, res) => {
+  res.json({ ok: true, time: new Date().toISOString() })
+})
 
-if (!process.env.JWT_SECRET) {
-  console.warn('⚠️  JWT_SECRET manquant. Définis-le en production.');
-}
-
-/* ───────────── Routes utilitaires ───────────── */
-app.get('/__health', (req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
-});
 app.get('/__cors', (req, res) => {
-  const origin = (req.headers.origin || '').replace(/\/$/, '');
-  res.json({ origin, allowedOrigins: [...ALLOWED], method: req.method, headers: req.headers });
-});
+  const origin = (req.headers.origin || '').replace(/\/$/, '')
+  res.json({ origin, allowedOrigins: [...ALLOWED], method: req.method, headers: req.headers })
+})
 
-/* ───────────── Auth middlewares ───────────── */
+app.get('/__db', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        current_database() AS db,
+        current_user       AS user,
+        inet_server_addr() AS server_addr,
+        inet_server_port() AS server_port,
+        version()          AS version
+    `)
+    res.json(rows[0])
+  } catch (e) {
+    res.status(500).json({ error: 'db_probe_failed', detail: String(e.message || e) })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────
+// Middlewares d'authentification et d'autorisation
+// ─────────────────────────────────────────────────────────────
+
 function authenticateToken(req, res, next) {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
-  if (!token) return res.sendStatus(401);
+  const authHeader = req.headers['authorization']
+  const token = authHeader && authHeader.split(' ')[1]
+  if (!token) return res.sendStatus(401)
   jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-    if (err) return res.sendStatus(403);
-    req.user = user;
-    next();
-  });
+    if (err) return res.sendStatus(403)
+    req.user = user
+    next()
+  })
 }
+
 function authorizeRoles(...roles) {
   return (req, res, next) => {
-    if (!req.user || !roles.includes(req.user.role)) return res.sendStatus(403);
-    next();
-  };
+    if (!req.user || !roles.includes(req.user.role)) return res.sendStatus(403)
+    next()
+  }
 }
 
+// Vérifie que l'utilisateur connecté a accès à la classe demandée
+// (propriétaire ou co-prof). Les admins passent toujours.
+async function ensureClassAccess(req, res, next) {
+  try {
+    if (req.user?.role === 'admin') return next()
+
+    const classId = Number(
+      req.params.classId ?? req.params.id ?? req.body.class_id ?? req.query.class_id,
+    )
+    if (!Number.isInteger(classId)) {
+      return res.status(400).json({ message: 'classId invalide' })
+    }
+
+    const { rows } = await pool.query(
+      `SELECT 1
+       FROM classes c
+       LEFT JOIN class_users cu ON cu.class_id = c.id AND cu.user_id = $2
+       WHERE c.id = $1 AND (c.user_id = $2 OR cu.user_id IS NOT NULL)
+       LIMIT 1`,
+      [classId, req.user.id],
+    )
+    if (!rows.length) return res.status(403).json({ message: 'Accès refusé à cette classe' })
+    next()
+  } catch (e) {
+    console.error('ensureClassAccess', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+}
+
+// Résout la classe d'une séance puis délègue à ensureClassAccess.
+async function ensureSessionAccess(req, res, next) {
+  try {
+    if (req.user?.role === 'admin') return next()
+
+    const sessionId = Number(req.params.id ?? req.body.session_id ?? req.query.session_id)
+    if (!Number.isInteger(sessionId)) {
+      return res.status(400).json({ message: 'sessionId invalide' })
+    }
+
+    const { rows } = await pool.query('SELECT class_id FROM sessions WHERE id = $1', [sessionId])
+    if (!rows.length) return res.status(404).json({ message: 'Séance introuvable' })
+
+    // On injecte le classId pour que ensureClassAccess puisse le lire
+    // sans écraser req.params.id (qui contient le sessionId).
+    req.params.classId = rows[0].class_id
+    return ensureClassAccess(req, res, next)
+  } catch (e) {
+    console.error('ensureSessionAccess', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+}
+
+// Résout la classe d'un élève puis délègue à ensureClassAccess.
+async function ensureStudentClassAccess(req, res, next) {
+  try {
+    if (req.user?.role === 'admin') return next()
+
+    const studentId = Number(req.params.id)
+    if (!Number.isInteger(studentId)) {
+      return res.status(400).json({ message: 'studentId invalide' })
+    }
+
+    const { rows } = await pool.query('SELECT class_id FROM students WHERE id = $1', [studentId])
+    if (!rows.length) return res.status(404).json({ message: 'Élève introuvable' })
+
+    req.params.classId = String(rows[0].class_id)
+    return ensureClassAccess(req, res, next)
+  } catch (e) {
+    console.error('ensureStudentClassAccess', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+}
 
 // ─────────────────────────────────────────────────────────────
-// Utils Date / Génération de séances (UTC safe)
+// Utilitaires : dates et génération de séances (UTC)
 // ─────────────────────────────────────────────────────────────
+
 function utcNoon(y, m0, d) {
   return new Date(Date.UTC(y, m0, d, 12))
 }
+
 function schoolStartYear(now = new Date()) {
   const y = now.getUTCFullYear()
   const m = now.getUTCMonth() + 1
   return m >= 9 ? y : y - 1
 }
+
 function getActiveSchoolYear(now = new Date()) {
   const sy = schoolStartYear(now)
-  return { start: utcNoon(sy, 8, 1), end: utcNoon(sy + 1, 6, 14) } // 01/09 -> 14/07
+  return { start: utcNoon(sy, 8, 1), end: utcNoon(sy + 1, 6, 14) }
 }
+
 const ISO_FROM_FR = {
-  dimanche: 7,
-  lundi: 1,
-  mardi: 2,
-  mercredi: 3,
-  jeudi: 4,
-  vendredi: 5,
-  samedi: 6,
+  dimanche: 7, lundi: 1, mardi: 2, mercredi: 3, jeudi: 4, vendredi: 5, samedi: 6,
 }
+
 function normalizeToIsoWeekday(input) {
   if (typeof input === 'string') return ISO_FROM_FR[input.toLowerCase()] ?? null
   if (typeof input === 'number') {
@@ -213,21 +302,25 @@ function normalizeToIsoWeekday(input) {
   }
   return null
 }
+
 function jsDowFromIso(iso) {
-  return iso % 7 // ISO 7=dim → JS 0
+  return iso % 7 // ISO 7 (dimanche) → JS 0
 }
+
 function firstOnOrAfter(startUtc, jsTarget) {
   const d = new Date(startUtc.getTime())
   const delta = (jsTarget - d.getUTCDay() + 7) % 7
   d.setUTCDate(d.getUTCDate() + delta)
   return d
 }
+
 function ymdUTC(d) {
   const y = d.getUTCFullYear()
   const m = String(d.getUTCMonth() + 1).padStart(2, '0')
   const day = String(d.getUTCDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
 }
+
 function enumerateDatesByWeekday(startUtc, endUtc, isoDow) {
   const jsTarget = jsDowFromIso(isoDow)
   const s = utcNoon(startUtc.getUTCFullYear(), startUtc.getUTCMonth(), startUtc.getUTCDate())
@@ -241,65 +334,14 @@ function enumerateDatesByWeekday(startUtc, endUtc, isoDow) {
   return out
 }
 
-// ─────────────────────────────────────────────────────────────
-// Garde-fous d’accès aux classes/sessions (owner ou co-prof)
-// ─────────────────────────────────────────────────────────────
-async function ensureClassAccess(req, res, next) {
-  try {
-    if (req.user?.role === 'admin') return next()
-
-    const classId = Number(
-      req.params.classId ?? req.params.id ?? req.body.class_id ?? req.query.class_id,
-    )
-    if (!Number.isInteger(classId)) {
-      return res.status(400).json({ message: 'classId invalide' })
-    }
-
-    const { rows } = await pool.query(
-      `
-      SELECT 1
-      FROM classes c
-      LEFT JOIN class_users cu ON cu.class_id = c.id AND cu.user_id = $2
-      WHERE c.id = $1 AND (c.user_id = $2 OR cu.user_id IS NOT NULL)
-      LIMIT 1
-      `,
-      [classId, req.user.id],
-    )
-    if (!rows.length) return res.status(403).json({ message: 'Accès refusé à cette classe' })
-    next()
-  } catch (e) {
-    console.error('ensureClassAccess', e)
-    res.status(500).json({ message: 'Erreur serveur (access classe)' })
-  }
-}
-async function ensureSessionAccess(req, res, next) {
-  try {
-    if (req.user?.role === 'admin') return next()
-
-    const sessionId = Number(req.params.id ?? req.body.session_id ?? req.query.session_id)
-    if (!Number.isInteger(sessionId)) return res.status(400).json({ message: 'sessionId invalide' })
-
-    const { rows } = await pool.query('SELECT class_id FROM sessions WHERE id = $1', [sessionId])
-    if (!rows.length) return res.status(404).json({ message: 'Séance introuvable' })
-
-    req.params.classId = rows[0].class_id
-    req.params.id = rows[0].class_id
-    return ensureClassAccess(req, res, next)
-  } catch (e) {
-    console.error('ensureSessionAccess', e)
-    res.status(500).json({ message: 'Erreur serveur (access session)' })
-  }
-}
 async function ensureSessionsForWeekday(classId, isoWeekday, startYear = schoolStartYear()) {
   const start = utcNoon(startYear, 8, 1)
   const end = utcNoon(startYear + 1, 6, 14)
   const dates = enumerateDatesByWeekday(start, end, isoWeekday)
   await pool.query(
-    `
-    INSERT INTO sessions (class_id, date)
-    SELECT $1, unnest($2::date[])
-    ON CONFLICT (class_id, date) DO NOTHING
-    `,
+    `INSERT INTO sessions (class_id, date)
+     SELECT $1, unnest($2::date[])
+     ON CONFLICT (class_id, date) DO NOTHING`,
     [classId, dates],
   )
 }
@@ -307,53 +349,63 @@ async function ensureSessionsForWeekday(classId, isoWeekday, startYear = schoolS
 // ─────────────────────────────────────────────────────────────
 // AUTH
 // ─────────────────────────────────────────────────────────────
-const DEV = (process.env.NODE_ENV || 'development') !== 'production';
+const DEV = (process.env.NODE_ENV || 'development') !== 'production'
 
 app.post('/login', async (req, res) => {
   try {
-    const { username, password } = req.body || {};
+    const { username, password } = req.body || {}
     if (!username || !password) {
-      return res.status(400).json({ message: 'Username et mot de passe requis' });
+      return res.status(400).json({ message: 'Username et mot de passe requis' })
     }
 
-    // ⚠️ schéma explicite pour éviter “relation does not exist”
-    const q = `
-      SELECT id, username, role, password
-      FROM public.users
-      WHERE lower(username) = lower($1)
-      LIMIT 1
-    `;
-    const { rows } = await pool.query(q, [String(username).trim()]);
-    if (rows.length === 0) {
-      return res.status(401).json({ message: 'Utilisateur non trouvé' });
+    const { rows } = await pool.query(
+      `SELECT id, username, role, password
+       FROM public.users
+       WHERE lower(username) = lower($1)
+       LIMIT 1`,
+      [String(username).trim()],
+    )
+    if (!rows.length) {
+      return res.status(401).json({ message: 'Utilisateur non trouvé' })
     }
 
-    const user = rows[0];
-
-    // bcryptjs = compareSync (sinon promisifier)
-    const ok = bcrypt.compareSync(String(password), user.password);
+    const user = rows[0]
+    const ok = bcrypt.compareSync(String(password), user.password)
     if (!ok) {
-      return res.status(401).json({ message: 'Mot de passe incorrect' });
+      return res.status(401).json({ message: 'Mot de passe incorrect' })
     }
 
     const token = jwt.sign(
       { id: user.id, username: user.username, role: user.role },
       process.env.JWT_SECRET,
-      { expiresIn: '8h' }
-    );
+      { expiresIn: '8h' },
+    )
 
-    return res.json({ token, user: { id: user.id, username: user.username, role: user.role } });
+    return res.json({ token, user: { id: user.id, username: user.username, role: user.role } })
   } catch (err) {
-    console.error('Erreur serveur login:', err);
-    // En dev on renvoie le détail pour diagnostiquer
-    if (DEV) return res.status(500).json({ message: 'Erreur serveur', code: err.code, detail: err.message });
-    return res.status(500).json({ message: 'Erreur serveur' });
+    console.error('POST /login :', err)
+    if (DEV) return res.status(500).json({ message: 'Erreur serveur', code: err.code, detail: err.message })
+    return res.status(500).json({ message: 'Erreur serveur' })
   }
-});
+})
 
+// Renvoie le profil de l'utilisateur connecté (appelé au bootstrap côté client)
+app.get('/api/me', authenticateToken, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, username, role FROM users WHERE id = $1',
+      [req.user.id],
+    )
+    if (!rows.length) return res.status(404).json({ message: 'Utilisateur introuvable' })
+    res.json(rows[0])
+  } catch (e) {
+    console.error('GET /api/me :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
 
 // ─────────────────────────────────────────────────────────────
-// ADMIN API
+// ADMIN
 // ─────────────────────────────────────────────────────────────
 const admin = express.Router()
 admin.use(authenticateToken, authorizeRoles('admin'))
@@ -365,7 +417,7 @@ admin.get('/profs', async (_req, res) => {
     )
     res.json(rows)
   } catch (e) {
-    console.error('admin/profs', e)
+    console.error('GET /api/admin/profs :', e)
     res.status(500).json({ message: 'Erreur chargement profs' })
   }
 })
@@ -381,7 +433,7 @@ admin.get('/stats', async (_req, res) => {
     `)
     res.json(rows[0])
   } catch (e) {
-    console.error('admin/stats', e)
+    console.error('GET /api/admin/stats :', e)
     res.status(500).json({ message: 'Erreur stats' })
   }
 })
@@ -390,65 +442,66 @@ admin.get('/attendance-rate', async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT c.id, c.nom AS name,
-             COUNT(a.*) AS marked,
+             COUNT(a.*)  AS marked,
              SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) AS presents,
              ROUND(
-               CASE WHEN COUNT(a.*)=0 THEN 0
-                    ELSE 100.0*SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END)/COUNT(a.*)
+               CASE WHEN COUNT(a.*) = 0 THEN 0
+                    ELSE 100.0 * SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) / COUNT(a.*)
                END, 1
              ) AS rate
       FROM classes c
-      LEFT JOIN sessions s ON s.class_id = c.id
+      LEFT JOIN sessions   s ON s.class_id = c.id
       LEFT JOIN attendances a ON a.session_id = s.id
       GROUP BY c.id, c.nom
-      ORDER BY c.nom ASC;
+      ORDER BY c.nom ASC
     `)
     res.json(rows)
   } catch (e) {
-    console.error('admin/attendance-rate', e)
+    console.error('GET /api/admin/attendance-rate :', e)
     res.status(500).json({ message: 'Erreur stats présence' })
   }
 })
 
 admin.get('/classes', async (_req, res) => {
   try {
-    const { rows } = await pool.query(
-      'SELECT id, nom AS name, description, user_id AS owner_id FROM classes ORDER BY nom ASC',
-    )
+    const { rows } = await pool.query(`
+      SELECT c.id,
+             c.nom         AS name,
+             c.description,
+             c.user_id     AS owner_id,
+             u.username    AS owner_username
+      FROM classes c
+      LEFT JOIN users u ON u.id = c.user_id
+      ORDER BY c.nom ASC
+    `)
     res.json(rows)
   } catch (e) {
-    console.error('admin/classes', e)
+    console.error('GET /api/admin/classes :', e)
     res.status(500).json({ message: 'Erreur chargement classes' })
   }
 })
 
-// Liste owner + co-profs (par id de classe)
 admin.get('/classes/:id/managers', async (req, res) => {
   try {
     const classId = Number(req.params.id)
     if (!Number.isInteger(classId)) return res.status(400).json({ message: 'classId invalide' })
 
     const { rows } = await pool.query(
-      `
-      SELECT u.id, u.username, u.role, TRUE AS is_owner
-      FROM users u
-      JOIN classes c ON c.user_id = u.id
-      WHERE c.id = $1
-
-      UNION
-
-      SELECT u.id, u.username, u.role, FALSE AS is_owner
-      FROM users u
-      JOIN class_users cu ON cu.user_id = u.id
-      WHERE cu.class_id = $1
-
-      ORDER BY is_owner DESC, username ASC
-      `,
+      `SELECT u.id, u.username, u.role, TRUE AS is_owner
+       FROM users u
+       JOIN classes c ON c.user_id = u.id
+       WHERE c.id = $1
+       UNION
+       SELECT u.id, u.username, u.role, FALSE AS is_owner
+       FROM users u
+       JOIN class_users cu ON cu.user_id = u.id
+       WHERE cu.class_id = $1
+       ORDER BY is_owner DESC, username ASC`,
       [classId],
     )
     res.json(rows)
   } catch (e) {
-    console.error('admin GET /classes/:id/managers', e)
+    console.error('GET /api/admin/classes/:id/managers :', e)
     res.status(500).json({ message: 'Erreur chargement gestionnaires' })
   }
 })
@@ -477,7 +530,7 @@ admin.post('/classes', async (req, res) => {
     await upsertOwnerLink(rows[0].id, owner_id)
     res.json(rows[0])
   } catch (e) {
-    console.error('admin POST /classes', e)
+    console.error('POST /api/admin/classes :', e)
     res.status(500).json({ message: 'Erreur création' })
   }
 })
@@ -488,9 +541,9 @@ admin.patch('/classes/:id', async (req, res) => {
     const { name, description, owner_id } = req.body
     const { rows } = await pool.query(
       `UPDATE classes
-         SET nom = COALESCE($1, nom),
+         SET nom         = COALESCE($1, nom),
              description = COALESCE($2, description),
-             user_id = $3
+             user_id     = $3
        WHERE id = $4
        RETURNING id, nom AS name, description, user_id AS owner_id`,
       [name ?? null, description ?? null, owner_id ?? null, id],
@@ -499,7 +552,7 @@ admin.patch('/classes/:id', async (req, res) => {
     await upsertOwnerLink(id, owner_id)
     res.json(rows[0])
   } catch (e) {
-    console.error('admin PATCH /classes/:id', e)
+    console.error('PATCH /api/admin/classes/:id :', e)
     res.status(500).json({ message: 'Erreur mise à jour' })
   }
 })
@@ -511,7 +564,7 @@ admin.delete('/classes/:id', async (req, res) => {
     if (rowCount === 0) return res.status(404).json({ message: 'Classe introuvable' })
     res.json({ ok: true })
   } catch (e) {
-    console.error('admin DELETE /classes/:id', e)
+    console.error('DELETE /api/admin/classes/:id :', e)
     res.status(500).json({ message: 'Erreur suppression' })
   }
 })
@@ -528,7 +581,7 @@ admin.post('/class-users', async (req, res) => {
     )
     res.json({ ok: true })
   } catch (e) {
-    console.error('admin POST /class-users', e)
+    console.error('POST /api/admin/class-users :', e)
     res.status(500).json({ message: 'Erreur liaison' })
   }
 })
@@ -538,26 +591,26 @@ admin.get('/class-users', async (req, res) => {
     const class_id = Number(req.query.class_id)
     if (!Number.isInteger(class_id)) return res.status(400).json({ message: 'class_id invalide' })
 
-    const sql = `
-      (
-        SELECT u.id, u.username, u.role, FALSE AS is_owner
-        FROM class_users cu
-        JOIN users u ON u.id = cu.user_id
-        WHERE cu.class_id = $1
-      )
-      UNION
-      (
-        SELECT u.id, u.username, u.role, TRUE AS is_owner
-        FROM classes c
-        JOIN users   u ON u.id = c.user_id
-        WHERE c.id = $1 AND c.user_id IS NOT NULL
-      )
-      ORDER BY is_owner DESC, username ASC
-    `
-    const { rows } = await pool.query(sql, [class_id])
+    const { rows } = await pool.query(
+      `(
+         SELECT u.id, u.username, u.role, FALSE AS is_owner
+         FROM class_users cu
+         JOIN users u ON u.id = cu.user_id
+         WHERE cu.class_id = $1
+       )
+       UNION
+       (
+         SELECT u.id, u.username, u.role, TRUE AS is_owner
+         FROM classes c
+         JOIN users u ON u.id = c.user_id
+         WHERE c.id = $1 AND c.user_id IS NOT NULL
+       )
+       ORDER BY is_owner DESC, username ASC`,
+      [class_id],
+    )
     res.json(Array.isArray(rows) ? rows : [])
   } catch (e) {
-    console.error('admin GET /class-users', e)
+    console.error('GET /api/admin/class-users :', e)
     res.status(500).json({ message: 'Erreur chargement gestionnaires' })
   }
 })
@@ -571,22 +624,72 @@ admin.delete('/class-users', async (req, res) => {
     ])
     res.json({ ok: true })
   } catch (e) {
-    console.error('admin DELETE /class-users', e)
+    console.error('DELETE /api/admin/class-users :', e)
     res.status(500).json({ message: 'Erreur délier' })
   }
 })
 
+// Route publique (pas d'authentification requise)
+app.use('/api/public/inscription', inscriptionRouter)
+
 app.use('/api/admin', admin)
 
 // ─────────────────────────────────────────────────────────────
-// CLASSES (legacy + /api/classes unifié)
+// DOSSIERS — lecture admin
 // ─────────────────────────────────────────────────────────────
+const dossierUploads = require('path').join(__dirname, 'uploads', 'dossiers')
+
+// Liste tous les dossiers reçus (admin uniquement)
+app.get('/api/admin/dossiers', authenticateToken, authorizeRoles('admin'), async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, type, nom_eleve, prenom_eleve, submitted_at FROM dossiers ORDER BY submitted_at DESC',
+    )
+    res.json(rows)
+  } catch (e) {
+    console.error('GET /api/admin/dossiers :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
+
+// Téléchargement d'un PDF de dossier (admin uniquement)
+app.get('/api/admin/dossiers/:id/pdf', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT pdf_filename, type, nom_eleve, prenom_eleve FROM dossiers WHERE id = $1',
+      [Number(req.params.id)],
+    )
+    if (!rows.length) return res.status(404).json({ message: 'Dossier introuvable' })
+
+    const { pdf_filename, type, prenom_eleve, nom_eleve } = rows[0]
+    const filePath = require('path').join(dossierUploads, pdf_filename)
+
+    if (!require('fs').existsSync(filePath)) {
+      return res.status(404).json({ message: 'Fichier PDF introuvable' })
+    }
+
+    const safeName = (v) => String(v || '').replace(/[^\wÀ-ɏ\- ]/g, '').trim()
+    const safeFilename = `dossier-${type}-${safeName(prenom_eleve)}-${safeName(nom_eleve)}.pdf`
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFilename}"`)
+    require('fs').createReadStream(filePath).pipe(res)
+  } catch (e) {
+    console.error('GET /api/admin/dossiers/:id/pdf :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
+
+// ─────────────────────────────────────────────────────────────
+// CLASSES
+// ─────────────────────────────────────────────────────────────
+
+// Route legacy (admin uniquement) conservée pour compatibilité
 app.get('/classes', authenticateToken, authorizeRoles('admin'), async (_req, res) => {
   try {
     const result = await pool.query('SELECT id, nom AS name FROM classes ORDER BY nom ASC')
     res.json(result.rows)
   } catch (err) {
-    console.error(err)
+    console.error('GET /classes :', err)
     res.status(500).json({ message: 'Erreur serveur' })
   }
 })
@@ -600,24 +703,23 @@ app.get('/my-classes', authenticateToken, authorizeRoles('prof', 'admin'), async
       return res.json(rows)
     }
     const { rows } = await pool.query(
-      `
-      SELECT DISTINCT c.id, c.nom AS name, c.description, c.user_id AS owner_id
-      FROM classes c
-      LEFT JOIN class_users cu ON cu.class_id = c.id
-      WHERE c.user_id = $1 OR cu.user_id = $1
-      ORDER BY c.nom ASC
-      `,
+      `SELECT DISTINCT c.id, c.nom AS name, c.description, c.user_id AS owner_id
+       FROM classes c
+       LEFT JOIN class_users cu ON cu.class_id = c.id
+       WHERE c.user_id = $1 OR cu.user_id = $1
+       ORDER BY c.nom ASC`,
       [req.user.id],
     )
     res.json(rows)
   } catch (err) {
-    console.error('Erreur route /my-classes :', err)
+    console.error('GET /my-classes :', err)
     res.status(500).json({ message: 'Erreur serveur' })
   }
 })
 
 const classesRouter = express.Router()
 
+// Renvoie les classes accessibles à l'utilisateur connecté
 classesRouter.get('/', authenticateToken, async (req, res) => {
   try {
     if (req.user.role === 'admin') {
@@ -626,25 +728,22 @@ classesRouter.get('/', authenticateToken, async (req, res) => {
     }
     if (req.user.role === 'prof') {
       const result = await pool.query(
-        `
-        SELECT DISTINCT c.id, c.nom AS name
-        FROM classes c
-        LEFT JOIN class_users cu ON cu.class_id = c.id
-        WHERE c.user_id = $1 OR cu.user_id = $1
-        ORDER BY c.nom ASC
-        `,
+        `SELECT DISTINCT c.id, c.nom AS name
+         FROM classes c
+         LEFT JOIN class_users cu ON cu.class_id = c.id
+         WHERE c.user_id = $1 OR cu.user_id = $1
+         ORDER BY c.nom ASC`,
         [req.user.id],
       )
       return res.json(result.rows)
     }
     return res.status(403).json({ message: 'Accès interdit' })
   } catch (err) {
-    console.error('Erreur route /api/classes :', err)
+    console.error('GET /api/classes :', err)
     res.status(500).json({ message: 'Erreur serveur' })
   }
 })
 
-// GET /api/classes/:id → { id, name, weekday }
 classesRouter.get('/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params
@@ -655,55 +754,52 @@ classesRouter.get('/:id', authenticateToken, async (req, res) => {
     if (!rows.length) return res.status(404).json({ message: 'Classe introuvable' })
     res.json(rows[0])
   } catch (e) {
-    console.error('GET /api/classes/:id', e)
+    console.error('GET /api/classes/:id :', e)
     res.status(500).json({ message: 'Erreur serveur' })
   }
 })
+
 app.use('/api/classes', classesRouter)
 
-// PATCH /classes/:id/weekday (ne supprime plus les autres dates)
-const patchClassWeekdayHandler = async (req, res) => {
-  try {
-    const classId = Number(req.params.id)
-    const iso = normalizeToIsoWeekday(req.body.weekday)
-    if (!iso) return res.status(400).json({ message: 'weekday invalide' })
-
-    await pool.query('UPDATE classes SET weekday=$1 WHERE id=$2', [iso, classId])
-
-    const sy = Number.isInteger(req.body.startYear) ? req.body.startYear : schoolStartYear()
-    const start = utcNoon(sy, 8, 1)
-    const end = utcNoon(sy + 1, 6, 14)
-
-    const dates = enumerateDatesByWeekday(start, end, iso)
-    await pool.query(
-      `
-      INSERT INTO sessions (class_id, date)
-      SELECT $1, unnest($2::date[])
-      ON CONFLICT (class_id, date) DO NOTHING
-      `,
-      [classId, dates],
-    )
-
-    const { rows } = await pool.query(
-      "SELECT id, to_char(date,'YYYY-MM-DD') AS date, status, note \
-       FROM sessions WHERE class_id=$1 ORDER BY date",
-      [classId],
-    )
-    res.json(rows)
-  } catch (e) {
-    console.error('PATCH weekday', e)
-    res.status(500).json({ message: 'Erreur mise à jour du jour de classe' })
-  }
-}
+// Met à jour le jour de cours de la classe et génère les séances manquantes
 app.patch(
   ['/api/classes/:id/weekday', '/classes/:id/weekday'],
   authenticateToken,
   authorizeRoles('prof', 'admin'),
   ensureClassAccess,
-  patchClassWeekdayHandler,
+  async (req, res) => {
+    try {
+      const classId = Number(req.params.id)
+      const iso = normalizeToIsoWeekday(req.body.weekday)
+      if (!iso) return res.status(400).json({ message: 'weekday invalide' })
+
+      await pool.query('UPDATE classes SET weekday=$1 WHERE id=$2', [iso, classId])
+
+      const sy = Number.isInteger(req.body.startYear) ? req.body.startYear : schoolStartYear()
+      const start = utcNoon(sy, 8, 1)
+      const end = utcNoon(sy + 1, 6, 14)
+      const dates = enumerateDatesByWeekday(start, end, iso)
+
+      await pool.query(
+        `INSERT INTO sessions (class_id, date)
+         SELECT $1, unnest($2::date[])
+         ON CONFLICT (class_id, date) DO NOTHING`,
+        [classId, dates],
+      )
+
+      const { rows } = await pool.query(
+        "SELECT id, to_char(date,'YYYY-MM-DD') AS date, status, note FROM sessions WHERE class_id=$1 ORDER BY date",
+        [classId],
+      )
+      res.json(rows)
+    } catch (e) {
+      console.error('PATCH weekday :', e)
+      res.status(500).json({ message: 'Erreur mise à jour du jour de classe' })
+    }
+  },
 )
 
-// Génération (legacy)
+// Route legacy : génère les séances d'une classe pour l'année scolaire active
 app.post(
   '/classes/:id/generate-sessions',
   authenticateToken,
@@ -719,8 +815,7 @@ app.post(
 
       let isoWeekday = normalizeToIsoWeekday(req.body?.weekday)
       if (isoWeekday == null) isoWeekday = normalizeToIsoWeekday(cl.rows[0].weekday)
-      if (isoWeekday == null)
-        return res.status(400).json({ message: 'Jour de cours requis (weekday)' })
+      if (isoWeekday == null) return res.status(400).json({ message: 'Jour de cours requis (weekday)' })
 
       if (cl.rows[0].weekday !== isoWeekday) {
         await pool.query('UPDATE classes SET weekday = $1 WHERE id = $2', [isoWeekday, classId])
@@ -730,22 +825,19 @@ app.post(
       const allDates = enumerateDatesByWeekday(start, end, isoWeekday)
 
       await pool.query(
-        `
-        INSERT INTO sessions (class_id, date)
-        SELECT $1, unnest($2::date[])
-        ON CONFLICT (class_id, date) DO NOTHING
-        `,
+        `INSERT INTO sessions (class_id, date)
+         SELECT $1, unnest($2::date[])
+         ON CONFLICT (class_id, date) DO NOTHING`,
         [classId, allDates],
       )
 
       const { rows } = await pool.query(
-        "SELECT id, to_char(date,'YYYY-MM-DD') AS date, status, note \
-         FROM sessions WHERE class_id=$1 ORDER BY date",
+        "SELECT id, to_char(date,'YYYY-MM-DD') AS date, status, note FROM sessions WHERE class_id=$1 ORDER BY date",
         [classId],
       )
       res.json(rows)
     } catch (e) {
-      console.error('generate-sessions', e)
+      console.error('POST /classes/:id/generate-sessions :', e)
       res.status(500).json({ message: 'Erreur génération sessions' })
     }
   },
@@ -756,92 +848,111 @@ app.post(
 // ─────────────────────────────────────────────────────────────
 const studentsRouter = express.Router()
 
-// POST /api/students
-studentsRouter.post('/', async (req, res) => {
+// Toutes les routes élèves nécessitent un token valide et le rôle prof ou admin
+studentsRouter.use(authenticateToken, authorizeRoles('prof', 'admin'))
+
+studentsRouter.post('/', ensureClassAccess, async (req, res) => {
   try {
     const { firstname, lastname, class_id, phone, weekday } = req.body
-    let iso = normalizeToIsoWeekday(weekday) // optionnel
+    const iso = normalizeToIsoWeekday(weekday)
 
-    const insertSql = `
-      INSERT INTO students (firstname, lastname, class_id, phone, weekday)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING *
-    `
-    const { rows } = await pool.query(insertSql, [
-      firstname,
-      lastname,
-      class_id,
-      phone ?? null,
-      iso ?? null,
-    ])
+    const { rows } = await pool.query(
+      `INSERT INTO students (firstname, lastname, class_id, phone, weekday)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [firstname, lastname, class_id, phone ?? null, iso ?? null],
+    )
 
+    // Si l'élève a un jour spécifique, on génère ses séances pour l'année en cours
     if (iso) await ensureSessionsForWeekday(Number(class_id), iso)
     res.json(rows[0])
   } catch (err) {
-    console.error('POST /api/students', err)
+    console.error('POST /api/students :', err)
     res.status(500).json({ message: 'Erreur serveur' })
   }
 })
 
-// GET /api/students/:class_id
-studentsRouter.get('/:class_id', async (req, res) => {
+studentsRouter.get('/:classId', ensureClassAccess, async (req, res) => {
   try {
-    const { class_id } = req.params
+    const { classId } = req.params
     const result = await pool.query(
       'SELECT * FROM students WHERE class_id = $1 ORDER BY lastname ASC',
-      [class_id],
+      [classId],
     )
     res.json(result.rows)
   } catch (err) {
-    console.error('GET /api/students/:class_id', err)
+    console.error('GET /api/students/:classId :', err)
     res.status(500).json({ message: 'Erreur serveur' })
   }
 })
-app.use('/api/students', studentsRouter)
 
-// DELETE /api/students/:id
-app.delete('/api/students/:id', async (req, res) => {
+studentsRouter.delete('/:id', ensureStudentClassAccess, async (req, res) => {
   const id = Number(req.params.id)
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'id invalide' })
   try {
-    const q = 'DELETE FROM students WHERE id=$1'
-    const { rowCount } = await pool.query(q, [id])
+    const { rowCount } = await pool.query('DELETE FROM students WHERE id=$1', [id])
     if (rowCount === 0) return res.status(404).json({ error: 'élève introuvable' })
     return res.status(204).end()
   } catch (err) {
-    console.error('delete student', err)
+    console.error('DELETE /api/students/:id :', err)
     return res.status(500).json({ error: 'server_error' })
   }
 })
 
-// PATCH /api/students/:id (weekday élève)
-studentsRouter.patch('/:id', async (req, res) => {
+studentsRouter.patch('/:id', ensureStudentClassAccess, async (req, res) => {
   try {
     const id = Number(req.params.id)
-    let iso = normalizeToIsoWeekday(req.body.weekday)
+    const { phone, weekday } = req.body
+
+    const iso = weekday !== undefined ? normalizeToIsoWeekday(weekday) : undefined
+
+    const fields = []
+    const values = []
+    let index = 1
+
+    if (iso !== undefined) {
+      fields.push(`weekday = $${index}`)
+      values.push(iso ?? null)
+      index++
+    }
+    if (phone !== undefined) {
+      fields.push(`phone = $${index}`)
+      values.push(phone || null)
+      index++
+    }
+
+    if (fields.length === 0) {
+      return res.status(400).json({ message: 'Aucune donnée à mettre à jour' })
+    }
+
+    values.push(id)
 
     const { rows } = await pool.query(
       `UPDATE students
-         SET weekday = $1
-       WHERE id = $2
+         SET ${fields.join(', ')}
+       WHERE id = $${index}
        RETURNING id, firstname, lastname, class_id, phone, weekday`,
-      [iso ?? null, id],
+      values,
     )
+
     if (!rows.length) return res.status(404).json({ message: 'Élève introuvable' })
+
     if (iso) await ensureSessionsForWeekday(Number(rows[0].class_id), iso)
+
     res.json(rows[0])
   } catch (e) {
-    console.error('PATCH /api/students/:id', e)
+    console.error('PATCH /api/students/:id :', e)
     res.status(500).json({ message: 'Erreur serveur' })
   }
 })
 
+app.use('/api/students', studentsRouter)
+
 // ─────────────────────────────────────────────────────────────
-// SESSIONS (dates de cours)
+// SESSIONS
 // ─────────────────────────────────────────────────────────────
 const sessionsRouter = express.Router()
 
-// GET /sessions/:classId
 sessionsRouter.get(
   '/:classId',
   authenticateToken,
@@ -851,19 +962,17 @@ sessionsRouter.get(
     try {
       const { classId } = req.params
       const { rows } = await pool.query(
-        "SELECT id, to_char(date,'YYYY-MM-DD') AS date, status, note \
-         FROM sessions WHERE class_id=$1 ORDER BY date",
+        "SELECT id, to_char(date,'YYYY-MM-DD') AS date, status, note FROM sessions WHERE class_id=$1 ORDER BY date",
         [classId],
       )
       res.json(rows)
     } catch (err) {
-      console.error('GET /sessions/:classId', err)
+      console.error('GET /sessions/:classId :', err)
       res.status(500).json({ error: 'Erreur serveur' })
     }
   },
 )
 
-// POST /sessions
 sessionsRouter.post(
   '/',
   authenticateToken,
@@ -885,30 +994,27 @@ sessionsRouter.post(
 
       if (newDates.length > 0) {
         await pool.query(
-          `
-          INSERT INTO sessions (class_id, date)
-          SELECT $1, unnest($2::date[])
-          ON CONFLICT (class_id, date) DO NOTHING
-          `,
+          `INSERT INTO sessions (class_id, date)
+           SELECT $1, unnest($2::date[])
+           ON CONFLICT (class_id, date) DO NOTHING`,
           [class_id, newDates],
         )
       }
 
-      const allDates = [...existingDates, ...newDates].sort()
-      res.json(allDates)
+      res.json([...existingDates, ...newDates].sort())
     } catch (err) {
-      console.error('POST /sessions', err)
+      console.error('POST /sessions :', err)
       res.status(500).json({ error: 'Erreur serveur' })
     }
   },
 )
+
 app.use('/sessions', sessionsRouter)
 
 // ─────────────────────────────────────────────────────────────
 // ATTENDANCE (présences)
 // ─────────────────────────────────────────────────────────────
 
-// GET /attendance/:classId  (protégé + contrôle d’accès)
 app.get(
   '/attendance/:classId',
   authenticateToken,
@@ -926,13 +1032,12 @@ app.get(
       )
       res.json(rows)
     } catch (err) {
-      console.error('GET /attendance/:classId', err)
+      console.error('GET /attendance/:classId :', err)
       res.status(500).json({ message: 'Erreur serveur' })
     }
   },
 )
 
-// POST /attendance (upsert)
 app.post(
   '/attendance',
   authenticateToken,
@@ -943,6 +1048,7 @@ app.post(
       let { student_id, session_id, status, comment } = req.body
       student_id = Number(student_id)
       session_id = Number(session_id)
+
       if (!student_id || !session_id || !status) {
         return res.status(400).json({ message: 'Paramètres manquants' })
       }
@@ -968,9 +1074,10 @@ app.post(
       if (!fk.rows[0].has_student) return res.status(400).json({ message: 'Élève introuvable' })
       if (!fk.rows[0].has_session) return res.status(400).json({ message: 'Session introuvable' })
 
-      const { rows: sRows } = await pool.query('SELECT status FROM sessions WHERE id=$1', [
-        session_id,
-      ])
+      const { rows: sRows } = await pool.query(
+        'SELECT status FROM sessions WHERE id=$1',
+        [session_id],
+      )
       if (!sRows.length) return res.status(404).json({ message: 'Séance introuvable' })
 
       const nonPointables = new Set(['cancelled', 'holiday', 'vacation'])
@@ -992,13 +1099,14 @@ app.post(
       if (err.code === '23514') {
         return res.status(400).json({ message: 'Commentaire requis pour "excusé(e)"' })
       }
-      console.error('POST /attendance error:', err)
+      console.error('POST /attendance :', err)
       res.status(500).json({ message: 'Erreur serveur' })
     }
   },
 )
 
-// PATCH /sessions/:id/status
+// Met à jour le statut d'une séance. Si le nouveau statut est non-pointable
+// et que des présences existent, ?force=true est requis pour les supprimer.
 app.patch(
   '/sessions/:id/status',
   authenticateToken,
@@ -1021,8 +1129,7 @@ app.patch(
         )
         if (cnt[0].n > 0 && !force) {
           return res.status(409).json({
-            message:
-              'Des pointages existent pour cette séance. Confirmez avec ?force=true pour les supprimer.',
+            message: 'Des pointages existent pour cette séance. Confirmez avec ?force=true pour les supprimer.',
             existing: cnt[0].n,
           })
         }
@@ -1031,25 +1138,25 @@ app.patch(
         }
       }
 
-      await pool.query('UPDATE sessions SET status=$1, note=$2 WHERE id=$3', [
-        status,
-        note ?? null,
-        id,
-      ])
-
-      const { rows } = await pool.query(
-        "SELECT id, to_char(date,'YYYY-MM-DD') AS date, status, note FROM sessions WHERE id=$1",
-        [id],
+      const { rows, rowCount } = await pool.query(
+        `UPDATE sessions
+           SET status = $1,
+               note   = $2
+         WHERE id = $3
+         RETURNING id, to_char(date,'YYYY-MM-DD') AS date, status, note`,
+        [status, note ?? null, id],
       )
-      res.json(rows[0])
+
+      if (rowCount === 0) return res.status(404).json({ message: 'Séance introuvable' })
+      return res.json(rows[0])
     } catch (e) {
-      console.error('PATCH /sessions/:id/status', e)
+      console.error('PATCH /sessions/:id/status :', e)
       res.status(500).json({ message: 'Erreur mise à jour statut' })
     }
   },
 )
 
-// POST /classes/:classId/sessions/extra
+// Crée une séance extra (hors planning habituel) pour une classe
 app.post(
   '/classes/:classId/sessions/extra',
   authenticateToken,
@@ -1059,34 +1166,35 @@ app.post(
     try {
       const classId = Number(req.params.classId)
       const { date, note } = req.body ?? {}
+
       if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date))) {
         return res.status(400).json({ message: 'Date invalide (YYYY-MM-DD)' })
       }
 
-      const sql = `
-      INSERT INTO sessions (class_id, date, status, note)
-      VALUES ($1, $2::date, 'extra', $3)
-      ON CONFLICT (class_id, date) DO NOTHING
-      RETURNING id, to_char(date,'YYYY-MM-DD') AS date, status, note
-      `
-      const { rows } = await pool.query(sql, [classId, date, note ?? null])
+      const { rows } = await pool.query(
+        `INSERT INTO sessions (class_id, date, status, note)
+         VALUES ($1, $2::date, 'extra', $3)
+         ON CONFLICT (class_id, date) DO NOTHING
+         RETURNING id, to_char(date,'YYYY-MM-DD') AS date, status, note`,
+        [classId, date, note ?? null],
+      )
+
       if (!rows.length) {
-        return res
-          .status(409)
-          .json({ message: 'Une séance existe déjà à cette date pour cette classe.' })
+        return res.status(409).json({ message: 'Une séance existe déjà à cette date pour cette classe.' })
       }
       res.status(201).json(rows[0])
     } catch (e) {
-      console.error('POST extra session', e)
+      console.error('POST /classes/:classId/sessions/extra :', e)
       res.status(500).json({ message: 'Erreur création séance extra' })
     }
   },
 )
 
-/** 404 par défaut */
-app.use((req, res) => res.status(404).json({ error: 'Not found' }));
-
+// ─────────────────────────────────────────────────────────────
+// Fallback 404
+// ─────────────────────────────────────────────────────────────
+app.use((_req, res) => res.status(404).json({ error: 'Not found' }))
 
 app.listen(PORT, () => {
-  console.log(`✅ Serveur démarré sur ${PORT}`)
-});
+  console.log(`Serveur démarré sur le port ${PORT}`)
+})

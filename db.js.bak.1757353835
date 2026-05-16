@@ -1,0 +1,41 @@
+// db.js — Neon HTTP-only (fetch), compatible pg.Pool#query
+
+try { require('dotenv').config(); } catch {}
+
+const { neon, neonConfig } = require('@neondatabase/serverless');
+
+// Connexions HTTP cachées (le warning "deprecated" est normal : c’est toujours true)
+neonConfig.fetchConnectionCache = true;
+
+// IPv4 d’abord (sur certains mutualisés c’est utile)
+try { require('dns').setDefaultResultOrder('ipv4first'); } catch {}
+
+const raw = process.env.DATABASE_URL || '';
+if (!raw) throw new Error('DATABASE_URL manquante. Définis-la dans .env.');
+
+// Très important : sortir du host -pooler (réservé au TCP 5432)
+const connectionString = raw.replace(/-pooler\./, '.');
+
+// Client Neon (tag template)
+const sql = neon(connectionString);
+
+/**
+ * Wrapper compatible pg.Pool#query(text, params?) -> { rows, rowCount }
+ */
+async function query(text, params = []) {
+  if (typeof text !== 'string') {
+    throw new TypeError('query(text, params): "text" doit être une string SQL');
+  }
+  // Exécution "unsafe" d’une string SQL classique (pas le tag `sql` littéral)
+  const rows = params && params.length
+    ? await sql.unsafe(text, params)
+    : await sql.unsafe(text);
+
+  return { rows, rowCount: Array.isArray(rows) ? rows.length : 0 };
+}
+
+// No-op pour compat avec du code qui tenterait pool.on()/pool.end()
+function on() {}
+async function end() {}
+
+module.exports = { query, on, end };
