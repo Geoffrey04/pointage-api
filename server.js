@@ -442,23 +442,59 @@ admin.get('/attendance-rate', async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT c.id, c.nom AS name,
-             COUNT(a.*)  AS marked,
-             SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) AS presents,
+             COUNT(DISTINCT s.id)::int AS sessions,
+             COUNT(a.*)::int AS marked,
+             SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)::int AS presents,
              ROUND(
                CASE WHEN COUNT(a.*) = 0 THEN 0
                     ELSE 100.0 * SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) / COUNT(a.*)
                END, 1
              ) AS rate
       FROM classes c
-      LEFT JOIN sessions   s ON s.class_id = c.id
+      LEFT JOIN sessions s ON s.class_id = c.id
+        AND NOT EXISTS (
+          SELECT 1 FROM periodes_exclues pe
+          WHERE s.date BETWEEN pe.date_debut AND pe.date_fin
+        )
       LEFT JOIN attendances a ON a.session_id = s.id
       GROUP BY c.id, c.nom
-      ORDER BY c.nom ASC
+      ORDER BY rate ASC
     `)
     res.json(rows)
   } catch (e) {
     console.error('GET /api/admin/attendance-rate :', e)
     res.status(500).json({ message: 'Erreur stats présence' })
+  }
+})
+
+admin.get('/attendance-by-month', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT c.id, c.nom AS name,
+             EXTRACT(YEAR  FROM s.date)::int AS year,
+             EXTRACT(MONTH FROM s.date)::int AS month,
+             COUNT(a.*)::int AS marked,
+             SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)::int AS presents,
+             ROUND(
+               CASE WHEN COUNT(a.*) = 0 THEN 0
+                    ELSE 100.0 * SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) / COUNT(a.*)
+               END, 1
+             ) AS rate
+      FROM classes c
+      JOIN sessions s ON s.class_id = c.id
+        AND s.date IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM periodes_exclues pe
+          WHERE s.date BETWEEN pe.date_debut AND pe.date_fin
+        )
+      JOIN attendances a ON a.session_id = s.id
+      GROUP BY c.id, c.nom, year, month
+      ORDER BY c.id, year, month
+    `)
+    res.json(rows)
+  } catch (e) {
+    console.error('GET /api/admin/attendance-by-month :', e)
+    res.status(500).json({ message: 'Erreur stats mensuelles' })
   }
 })
 
@@ -1195,6 +1231,36 @@ app.post(
 // ─────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }))
 
-app.listen(PORT, () => {
+// ─────────────────────────────────────────────────────────────
+// Init : table periodes_exclues + seed Zone B 2024-2025
+// Dates à vérifier sur education.gouv.fr si l'année change
+// ─────────────────────────────────────────────────────────────
+async function initPeriodesExclues() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS periodes_exclues (
+      id         SERIAL PRIMARY KEY,
+      label      VARCHAR(100) NOT NULL,
+      date_debut DATE NOT NULL,
+      date_fin   DATE NOT NULL
+    )
+  `)
+  const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM periodes_exclues')
+  if (rows[0].n > 0) return
+  await pool.query(`
+    INSERT INTO periodes_exclues (label, date_debut, date_fin) VALUES
+      ('Toussaint 2024',          '2024-10-19', '2024-11-03'),
+      ('Armistice 2024',          '2024-11-11', '2024-11-11'),
+      ('Noel 2024',               '2024-12-21', '2025-01-05'),
+      ('Hiver Zone B 2025',       '2025-02-22', '2025-03-09'),
+      ('Printemps Zone B 2025',   '2025-04-19', '2025-05-04'),
+      ('Victoire 1945 2025',      '2025-05-08', '2025-05-08'),
+      ('Ascension 2025',          '2025-05-29', '2025-05-29'),
+      ('Pentecote 2025',          '2025-06-09', '2025-06-09')
+  `)
+  console.log('[init] periodes_exclues seeded')
+}
+
+app.listen(PORT, async () => {
   console.log(`Serveur démarré sur le port ${PORT}`)
+  try { await initPeriodesExclues() } catch (e) { console.error('[init] periodes_exclues :', e) }
 })
