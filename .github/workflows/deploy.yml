@@ -9,16 +9,49 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Touch restart.txt
+        run: |
+          mkdir -p tmp
+          touch tmp/restart.txt
+
+      - name: Deploy via FTPS
+        id: deploy_ftps
+        continue-on-error: true
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.4
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          script: |
-            cd /home/c2658980c/appss/pointage-api
-            git pull origin main
-            npm install --omit=dev
-            touch tmp/restart.txt
-            echo "Déploiement terminé."
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USER }}
+          password: ${{ secrets.FTP_PASS }}
+          protocol: ftps
+          port: 21
+          local-dir: ./
+          server-dir: /appss/pointage-api/
+          exclude: |
+            **/.git/**
+            **/.github/**
+            **/node_modules/**
+            uploads/dossiers/**
+            .env
+            .env.*
+
+      - name: Retry with plain FTP
+        if: steps.deploy_ftps.outcome == 'failure'
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.4
+        with:
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USER }}
+          password: ${{ secrets.FTP_PASS }}
+          protocol: ftp
+          port: 21
+          local-dir: ./
+          server-dir: /appss/pointage-api/
+          exclude: |
+            **/.git/**
+            **/.github/**
+            **/node_modules/**
+            uploads/dossiers/**
+            .env
+            .env.*
