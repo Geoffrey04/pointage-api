@@ -1,4 +1,4 @@
-// ─────────────────────────────────────────────────────────────
+﻿// ─────────────────────────────────────────────────────────────
 // Gestionnaires d'erreurs globaux (à déclarer en tout premier)
 // ─────────────────────────────────────────────────────────────
 process.on('unhandledRejection', (err) => {
@@ -1260,7 +1260,7 @@ async function initPeriodesExclues() {
   console.log('[init] periodes_exclues seeded')
 }
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`)
-  try { await initPeriodesExclues() } catch (e) { console.error('[init] periodes_exclues :', e) }
 })
+initPeriodesExclues().catch(e => console.error('[init] periodes_exclues :', e))
