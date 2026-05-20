@@ -1239,8 +1239,7 @@ app.post(
 )
 
 // ─────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────
-// PUSH NOTIFICATIONS — abonnement
+// PUSH NOTIFICATIONS — abonnement + test admin
 // ─────────────────────────────────────────────────────────────
 app.post('/api/push/subscribe', authenticateToken, async (req, res) => {
   const { endpoint, keys } = req.body
@@ -1258,6 +1257,51 @@ app.post('/api/push/subscribe', authenticateToken, async (req, res) => {
   } catch (e) {
     console.error('POST /api/push/subscribe :', e)
     res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
+
+app.post('/api/push/test', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  const { isoDay } = req.body
+  if (!isoDay || isoDay < 1 || isoDay > 7) {
+    return res.status(400).json({ message: 'isoDay requis (1=lun … 7=dim)' })
+  }
+  try {
+    const { rows: profs } = await pool.query(`
+      SELECT t.user_id, u.username, array_agg(DISTINCT t.nom ORDER BY t.nom) AS class_names
+      FROM (
+        SELECT c.user_id, c.nom FROM classes c WHERE c.weekday = $1
+        UNION ALL
+        SELECT cu.user_id, c.nom
+        FROM classes c JOIN class_users cu ON cu.class_id = c.id
+        WHERE c.weekday = $1
+      ) t
+      JOIN users u ON u.id = t.user_id
+      GROUP BY t.user_id, u.username
+    `, [isoDay])
+
+    let sent = 0
+    for (const prof of profs) {
+      const { rows: subs } = await pool.query(
+        'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1',
+        [prof.user_id],
+      )
+      for (const sub of subs) {
+        const isSingle = prof.class_names.length === 1
+        const title = 'Rappel pointage 🎵'
+        const body = isSingle
+          ? `Bonjour ${prof.username}, n'oubliez pas de faire le pointage de votre classe ${prof.class_names[0]} aujourd'hui, ce serait dommage !`
+          : `Bonjour ${prof.username}, vous avez ${prof.class_names.length} classes aujourd'hui : ${prof.class_names.join(', ')}. N'oubliez pas de pointer, ce serait dommage !`
+        await webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          JSON.stringify({ title, body, url: '/classes' }),
+        ).catch(() => {})
+        sent++
+      }
+    }
+    res.json({ ok: true, profs: profs.length, sent })
+  } catch (e) {
+    console.error('POST /api/push/test :', e)
+    res.status(500).json({ message: 'Erreur test push' })
   }
 })
 
