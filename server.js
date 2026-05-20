@@ -43,6 +43,8 @@ try {
 
 const express = require('express')
 const jwt = require('jsonwebtoken')
+const webpush = require('web-push')
+const cron = require('node-cron')
 const inscriptionRouter = require('./routes/inscription')
 
 let bcrypt
@@ -69,6 +71,16 @@ pg.types.setTypeParser(1082, (v) => v)
 
 if (!process.env.JWT_SECRET) {
   console.warn('⚠️  JWT_SECRET manquant — à définir en production.')
+}
+
+if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    `mailto:${process.env.VAPID_MAILTO || 'admin@emm-pointage.fr'}`,
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY,
+  )
+} else {
+  console.warn('⚠️  VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY manquants — notifications push désactivées.')
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1227,6 +1239,28 @@ app.post(
 )
 
 // ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// PUSH NOTIFICATIONS — abonnement
+// ─────────────────────────────────────────────────────────────
+app.post('/api/push/subscribe', authenticateToken, async (req, res) => {
+  const { endpoint, keys } = req.body
+  if (!endpoint || !keys?.p256dh || !keys?.auth) {
+    return res.status(400).json({ message: 'Abonnement invalide' })
+  }
+  try {
+    await pool.query(
+      `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (user_id, endpoint) DO UPDATE SET p256dh = $3, auth = $4`,
+      [req.user.id, endpoint, keys.p256dh, keys.auth],
+    )
+    res.json({ ok: true })
+  } catch (e) {
+    console.error('POST /api/push/subscribe :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
+
 // Fallback 404
 // ─────────────────────────────────────────────────────────────
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }))
@@ -1260,7 +1294,77 @@ async function initPeriodesExclues() {
   console.log('[init] periodes_exclues seeded')
 }
 
+async function initPushSubscriptions() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      id         SERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      endpoint   TEXT NOT NULL,
+      p256dh     TEXT NOT NULL,
+      auth       TEXT NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (user_id, endpoint)
+    )
+  `)
+}
+
+// ─────────────────────────────────────────────────────────────
+// CRON — rappel pointage chaque jour à 12h (Europe/Paris)
+// ─────────────────────────────────────────────────────────────
+cron.schedule('0 12 * * *', async () => {
+  if (!process.env.VAPID_PUBLIC_KEY) return
+
+  const jsDay = new Date().getDay()
+  const isoDay = jsDay === 0 ? 7 : jsDay
+
+  try {
+    const { rows: profs } = await pool.query(`
+      SELECT t.user_id, u.username, array_agg(DISTINCT t.nom ORDER BY t.nom) AS class_names
+      FROM (
+        SELECT c.user_id, c.nom FROM classes c WHERE c.weekday = $1
+        UNION ALL
+        SELECT cu.user_id, c.nom
+        FROM classes c JOIN class_users cu ON cu.class_id = c.id
+        WHERE c.weekday = $1
+      ) t
+      JOIN users u ON u.id = t.user_id
+      GROUP BY t.user_id, u.username
+    `, [isoDay])
+
+    for (const prof of profs) {
+      const { rows: subs } = await pool.query(
+        'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1',
+        [prof.user_id],
+      )
+      for (const sub of subs) {
+        const classNames = prof.class_names
+        const isSingle = classNames.length === 1
+        const prenom = prof.username
+
+        const title = 'Rappel pointage 🎵'
+        const body = isSingle
+          ? `Bonjour ${prenom}, n'oubliez pas de faire le pointage de votre classe ${classNames[0]} aujourd'hui, ce serait dommage !`
+          : `Bonjour ${prenom}, vous avez ${classNames.length} classes aujourd'hui : ${classNames.join(', ')}. N'oubliez pas de pointer, ce serait dommage !`
+
+        const payload = JSON.stringify({ title, body, url: '/classes' })
+        await webpush.sendNotification(
+          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+          payload,
+        ).catch(async (err) => {
+          if (err.statusCode === 410) {
+            await pool.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [sub.endpoint])
+          }
+        })
+      }
+    }
+    console.log('[cron] rappels pointage envoyés —', profs.length, 'prof(s) concerné(s)')
+  } catch (e) {
+    console.error('[cron] erreur rappel pointage :', e)
+  }
+}, { timezone: 'Europe/Paris' })
+
 app.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`)
 })
 initPeriodesExclues().catch(e => console.error('[init] periodes_exclues :', e))
+initPushSubscriptions().catch(e => console.error('[init] push_subscriptions :', e))

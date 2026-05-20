@@ -18,10 +18,12 @@
     "dotenv": "^17.2.2",
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
+    "node-cron": "^4.2.1",
     "node-fetch": "^2.7.0",
     "nodemailer": "^8.0.7",
     "pdfkit": "^0.18.0",
     "pg": "^8.16.3",
+    "web-push": "^3.6.7",
     "ws": "^8.18.3"
   },
   "devDependencies": {
