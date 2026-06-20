@@ -21,7 +21,7 @@ require('dotenv').config()
 // ─────────────────────────────────────────────────────────────
 const path = require('path')
 const Module = require('module')
-const EXTRA_NODE_PATH = '/home/c2658980c/nodevenv/apps/pointage-api/20/lib/node_modules'
+const EXTRA_NODE_PATH = '/home/c2658980c/nodevenv/pointage-api/20/lib/node_modules'
 
 process.env.NODE_PATH = [
   path.join(__dirname, 'node_modules'),
