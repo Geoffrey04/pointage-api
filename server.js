@@ -678,7 +678,7 @@ admin.delete('/class-users', async (req, res) => {
 })
 
 // Route publique (pas d'authentification requise)
-app.use('/api/public/inscription', inscriptionRouter)
+app.use('/api/public', inscriptionRouter)
 
 app.use('/api/admin', admin)
 

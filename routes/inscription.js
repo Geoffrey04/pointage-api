@@ -40,7 +40,7 @@ function validDate(v) {
 }
 
 // POST /api/public/inscription
-router.post('/', async (req, res) => {
+router.post('/inscription', async (req, res) => {
   const { type, eleve, parents, parents2, antecedents, instruments, observations, avis,
           autorisationImage, faita, signataire, signature } = req.body
 
