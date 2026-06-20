@@ -1,11 +1,9 @@
-const express = require('express')
 const path = require('path')
 const fs = require('fs')
 const { generateDossierPDF } = require('../pdfGenerator')
 const { sendDossierEmail } = require('../mailer')
 const pool = require('../db')
 
-const router = express.Router()
 const UPLOADS = path.join(__dirname, '..', 'uploads', 'dossiers')
 fs.mkdirSync(UPLOADS, { recursive: true })
 
@@ -39,8 +37,7 @@ function validDate(v) {
   return /^\d{2}\/\d{2}\/\d{4}$/.test(String(v || ''))
 }
 
-// POST /api/public/inscription
-router.post('/inscription', async (req, res) => {
+module.exports = async function handleInscription(req, res) {
   const { type, eleve, parents, parents2, antecedents, instruments, observations, avis,
           autorisationImage, faita, signataire, signature } = req.body
 
@@ -186,6 +183,4 @@ router.post('/inscription', async (req, res) => {
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath)
     res.status(500).json({ message: 'Erreur lors de la création du dossier.' })
   }
-})
-
-module.exports = router
+}

@@ -45,7 +45,7 @@ const express = require('express')
 const jwt = require('jsonwebtoken')
 const webpush = require('web-push')
 const cron = require('node-cron')
-const inscriptionRouter = require('./routes/inscription')
+const handleInscription = require('./routes/inscription')
 
 let bcrypt
 try {
@@ -164,7 +164,7 @@ process.on('SIGTERM', shutdown('SIGTERM'))
 // Routes utilitaires (santé + diagnostic)
 // ─────────────────────────────────────────────────────────────
 app.get('/__health', (_req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() })
+  res.json({ ok: true, time: new Date().toISOString(), v: 2 })
 })
 
 app.get('/__cors', (req, res) => {
@@ -678,7 +678,7 @@ admin.delete('/class-users', async (req, res) => {
 })
 
 // Route publique (pas d'authentification requise)
-app.use('/api/public', inscriptionRouter)
+app.post('/api/public/inscription', handleInscription)
 
 app.use('/api/admin', admin)
 
