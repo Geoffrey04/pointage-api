@@ -31,8 +31,8 @@ jobs:
           protocol: ftps
           port: 21
           local-dir: ./
-          server-dir: /appss/pointage-api/
-          state-name: .ftp-deploy-sync-state-v2.json
+          server-dir: /apps/pointage-api/
+          state-name: .ftp-deploy-sync-state-v3.json
           exclude: |
             **/.git/**
             **/.github/**
@@ -50,8 +50,8 @@ jobs:
           protocol: ftp
           port: 21
           local-dir: ./
-          server-dir: /appss/pointage-api/
-          state-name: .ftp-deploy-sync-state-v2.json
+          server-dir: /apps/pointage-api/
+          state-name: .ftp-deploy-sync-state-v3.json
           exclude: |
             **/.git/**
             **/.github/**
