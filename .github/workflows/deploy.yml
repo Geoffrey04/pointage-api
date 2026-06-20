@@ -18,7 +18,7 @@ jobs:
       - name: Touch restart.txt
         run: |
           mkdir -p tmp
-          touch tmp/restart.txt
+          date -u > tmp/restart.txt
 
       - name: Deploy via FTPS
         id: deploy_ftps
@@ -32,6 +32,7 @@ jobs:
           port: 21
           local-dir: ./
           server-dir: /appss/pointage-api/
+          state-name: .ftp-deploy-sync-state-v2.json
           exclude: |
             **/.git/**
             **/.github/**
@@ -50,6 +51,7 @@ jobs:
           port: 21
           local-dir: ./
           server-dir: /appss/pointage-api/
+          state-name: .ftp-deploy-sync-state-v2.json
           exclude: |
             **/.git/**
             **/.github/**
