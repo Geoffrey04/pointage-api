@@ -1016,7 +1016,7 @@ studentsRouter.delete('/:id', ensureStudentClassAccess, async (req, res) => {
 studentsRouter.patch('/:id', ensureStudentClassAccess, async (req, res) => {
   try {
     const id = Number(req.params.id)
-    const { phone, weekday } = req.body
+    const { phone, weekday, class_id } = req.body
 
     const iso = weekday !== undefined ? normalizeToIsoWeekday(weekday) : undefined
 
@@ -1032,6 +1032,12 @@ studentsRouter.patch('/:id', ensureStudentClassAccess, async (req, res) => {
     if (phone !== undefined) {
       fields.push(`phone = $${index}`)
       values.push(phone || null)
+      index++
+    }
+    // Changement de classe réservé aux admins
+    if (class_id !== undefined && req.user?.role === 'admin') {
+      fields.push(`class_id = $${index}`)
+      values.push(Number(class_id))
       index++
     }
 
