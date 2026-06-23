@@ -42,6 +42,8 @@ try {
 }
 
 const express = require('express')
+const helmet = require('helmet')
+const rateLimit = require('express-rate-limit')
 const jwt = require('jsonwebtoken')
 const webpush = require('web-push')
 const cron = require('node-cron')
@@ -90,6 +92,10 @@ const app = express()
 const PORT = process.env.PORT || 3000
 
 app.set('trust proxy', 1)
+
+// Sécurité HTTP headers (désactivé CSP et CORP car API pure JSON)
+app.use(helmet({ contentSecurityPolicy: false, crossOriginResourcePolicy: false }))
+
 app.use(express.json({ limit: '2mb' }))
 app.use(express.urlencoded({ extended: false }))
 
@@ -363,7 +369,15 @@ async function ensureSessionsForWeekday(classId, isoWeekday, startYear = schoolS
 // ─────────────────────────────────────────────────────────────
 const DEV = (process.env.NODE_ENV || 'development') !== 'production'
 
-app.post('/login', async (req, res) => {
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Trop de tentatives de connexion, réessayez dans 15 minutes.' },
+})
+
+app.post('/login', loginLimiter, async (req, res) => {
   try {
     const { username, password } = req.body || {}
     if (!username || !password) {
