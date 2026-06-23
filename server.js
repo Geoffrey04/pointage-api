@@ -48,7 +48,8 @@ const jwt = require('jsonwebtoken')
 const webpush = require('web-push')
 const cron = require('node-cron')
 const handleInscription = require('./routes/inscription')
-const schoolYears = require('./routes/schoolYears')
+const schoolYears   = require('./routes/schoolYears')
+const enrollments   = require('./routes/enrollments')
 
 let bcrypt
 try {
@@ -709,7 +710,8 @@ app.get('/api/admin/students', authenticateToken, authorizeRoles('admin'), async
 })
 
 // Années scolaires (admin uniquement)
-app.use('/api/admin/school-years', authenticateToken, authorizeRoles('admin'), schoolYears)
+app.use('/api/admin/school-years',  authenticateToken, authorizeRoles('admin'), schoolYears)
+app.use('/api/admin/enrollments',   authenticateToken, authorizeRoles('admin'), enrollments)
 
 // Année courante (tous les utilisateurs authentifiés)
 app.get('/api/current-school-year', authenticateToken, async (_req, res) => {
@@ -961,6 +963,19 @@ studentsRouter.post('/', ensureClassAccess, async (req, res) => {
        RETURNING *`,
       [firstname, lastname, class_id, phone ?? null, iso ?? null],
     )
+
+    // Sync enrollment pour l'année scolaire courante (best-effort)
+    const { rows: years } = await pool.query(
+      'SELECT id FROM school_years WHERE is_current = true LIMIT 1',
+    )
+    if (years.length) {
+      await pool.query(
+        `INSERT INTO class_enrollments (student_id, class_id, school_year_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (student_id, class_id, school_year_id) DO NOTHING`,
+        [rows[0].id, class_id, years[0].id],
+      )
+    }
 
     // Si l'élève a un jour spécifique, on génère ses séances pour l'année en cours
     if (iso) await ensureSessionsForWeekday(Number(class_id), iso)
