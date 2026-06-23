@@ -692,6 +692,22 @@ admin.delete('/class-users', async (req, res) => {
   }
 })
 
+// Liste tous les élèves avec leur classe (admin uniquement)
+app.get('/api/admin/students', authenticateToken, authorizeRoles('admin'), async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT s.id, s.firstname, s.lastname, c.nom AS class_name
+       FROM students s
+       LEFT JOIN classes c ON c.id = s.class_id
+       ORDER BY s.lastname ASC, s.firstname ASC`,
+    )
+    res.json(rows)
+  } catch (e) {
+    console.error('GET /api/admin/students :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
+
 // Années scolaires (admin uniquement)
 app.use('/api/admin/school-years', authenticateToken, authorizeRoles('admin'), schoolYears)
 
