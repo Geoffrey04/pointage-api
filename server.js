@@ -48,6 +48,7 @@ const jwt = require('jsonwebtoken')
 const webpush = require('web-push')
 const cron = require('node-cron')
 const handleInscription = require('./routes/inscription')
+const schoolYears = require('./routes/schoolYears')
 
 let bcrypt
 try {
@@ -688,6 +689,26 @@ admin.delete('/class-users', async (req, res) => {
   } catch (e) {
     console.error('DELETE /api/admin/class-users :', e)
     res.status(500).json({ message: 'Erreur délier' })
+  }
+})
+
+// Années scolaires (admin uniquement)
+app.use('/api/admin/school-years', authenticateToken, authorizeRoles('admin'), schoolYears)
+
+// Année courante (tous les utilisateurs authentifiés)
+app.get('/api/current-school-year', authenticateToken, async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, label,
+              to_char(start_date, 'YYYY-MM-DD') AS start_date,
+              to_char(end_date,   'YYYY-MM-DD') AS end_date
+       FROM school_years WHERE is_current = true LIMIT 1`,
+    )
+    if (!rows.length) return res.status(404).json({ message: 'Aucune année scolaire active' })
+    res.json(rows[0])
+  } catch (e) {
+    console.error('GET /api/current-school-year :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
   }
 })
 
