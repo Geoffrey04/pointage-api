@@ -741,14 +741,58 @@ app.use('/api/admin', admin)
 const dossierUploads = require('path').join(__dirname, 'uploads', 'dossiers')
 
 // Liste tous les dossiers reçus (admin uniquement)
-app.get('/api/admin/dossiers', authenticateToken, authorizeRoles('admin'), async (_req, res) => {
+app.get('/api/admin/dossiers', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   try {
+    const { status } = req.query
+    const params = []
+    const where = status ? `WHERE status = $${params.push(status)}` : ''
     const { rows } = await pool.query(
-      'SELECT id, type, nom_eleve, prenom_eleve, submitted_at FROM dossiers ORDER BY submitted_at DESC',
+      `SELECT id, type, nom_eleve, prenom_eleve, submitted_at, status
+       FROM dossiers ${where} ORDER BY submitted_at DESC`,
+      params,
     )
     res.json(rows)
   } catch (e) {
     console.error('GET /api/admin/dossiers :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
+
+// Accepter un dossier : crée l'élève + enrollment
+app.post('/api/admin/dossiers/:id/accept', authenticateToken, authorizeRoles('admin'), async (req, res) => {
+  const id = Number(req.params.id)
+  const { class_id, school_year_id } = req.body || {}
+  if (!class_id || !school_year_id) {
+    return res.status(400).json({ message: 'class_id et school_year_id requis' })
+  }
+  try {
+    const { rows: found } = await pool.query(
+      'SELECT id, nom_eleve, prenom_eleve, status FROM dossiers WHERE id = $1',
+      [id],
+    )
+    if (!found.length) return res.status(404).json({ message: 'Dossier introuvable' })
+    if (found[0].status === 'accepted') return res.status(409).json({ message: 'Dossier déjà accepté' })
+
+    const { nom_eleve, prenom_eleve } = found[0]
+
+    const { rows: students } = await pool.query(
+      `INSERT INTO students (firstname, lastname, class_id)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [prenom_eleve, nom_eleve, class_id],
+    )
+
+    await pool.query(
+      `INSERT INTO class_enrollments (student_id, class_id, school_year_id)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (student_id, class_id, school_year_id) DO NOTHING`,
+      [students[0].id, class_id, school_year_id],
+    )
+
+    await pool.query('UPDATE dossiers SET status = $1 WHERE id = $2', ['accepted', id])
+
+    res.json({ success: true, student_id: students[0].id })
+  } catch (e) {
+    console.error('POST /api/admin/dossiers/:id/accept :', e)
     res.status(500).json({ message: 'Erreur serveur' })
   }
 })
