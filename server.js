@@ -761,7 +761,7 @@ app.get('/api/admin/dossiers', authenticateToken, authorizeRoles('admin'), async
 // Accepter un dossier : crée l'élève + enrollment
 app.post('/api/admin/dossiers/:id/accept', authenticateToken, authorizeRoles('admin'), async (req, res) => {
   const id = Number(req.params.id)
-  const { class_id, school_year_id } = req.body || {}
+  const { class_id, school_year_id, student_id } = req.body || {}
   if (!class_id || !school_year_id) {
     return res.status(400).json({ message: 'class_id et school_year_id requis' })
   }
@@ -775,17 +775,22 @@ app.post('/api/admin/dossiers/:id/accept', authenticateToken, authorizeRoles('ad
 
     const { nom_eleve, prenom_eleve } = found[0]
 
-    const { rows: students } = await pool.query(
-      `INSERT INTO students (firstname, lastname, class_id)
-       VALUES ($1, $2, $3) RETURNING id`,
-      [prenom_eleve, nom_eleve, class_id],
-    )
+    let studentId = student_id ? Number(student_id) : null
+
+    if (!studentId) {
+      const { rows: students } = await pool.query(
+        `INSERT INTO students (firstname, lastname, class_id)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [prenom_eleve, nom_eleve, class_id],
+      )
+      studentId = students[0].id
+    }
 
     await pool.query(
       `INSERT INTO class_enrollments (student_id, class_id, school_year_id)
        VALUES ($1, $2, $3)
        ON CONFLICT (student_id, class_id, school_year_id) DO NOTHING`,
-      [students[0].id, class_id, school_year_id],
+      [studentId, class_id, school_year_id],
     )
 
     await pool.query('UPDATE dossiers SET status = $1 WHERE id = $2', ['accepted', id])
