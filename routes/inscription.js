@@ -75,7 +75,7 @@ module.exports = async function handleInscription(req, res) {
       return res.status(400).json({ message: 'Format instruments invalide.' })
     }
     for (const instr of instruments) {
-      if (!INSTRUMENTS_ALLOWED.has(instr)) {
+      if (!INSTRUMENTS_ALLOWED.has(String(instr).normalize('NFC'))) {
         return res.status(400).json({ message: 'Instrument non reconnu.' })
       }
     }
