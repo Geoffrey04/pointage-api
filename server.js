@@ -747,7 +747,7 @@ app.get('/api/admin/dossiers', authenticateToken, authorizeRoles('admin'), async
     const params = []
     const where = status ? `WHERE status = $${params.push(status)}` : ''
     const { rows } = await pool.query(
-      `SELECT id, type, nom_eleve, prenom_eleve, submitted_at, status
+      `SELECT id, type, nom_eleve, prenom_eleve, submitted_at, status, phone
        FROM dossiers ${where} ORDER BY submitted_at DESC`,
       params,
     )
@@ -767,21 +767,21 @@ app.post('/api/admin/dossiers/:id/accept', authenticateToken, authorizeRoles('ad
   }
   try {
     const { rows: found } = await pool.query(
-      'SELECT id, nom_eleve, prenom_eleve, status FROM dossiers WHERE id = $1',
+      'SELECT id, nom_eleve, prenom_eleve, status, phone FROM dossiers WHERE id = $1',
       [id],
     )
     if (!found.length) return res.status(404).json({ message: 'Dossier introuvable' })
     if (found[0].status === 'accepted') return res.status(409).json({ message: 'Dossier déjà accepté' })
 
-    const { nom_eleve, prenom_eleve } = found[0]
+    const { nom_eleve, prenom_eleve, phone } = found[0]
 
     let studentId = student_id ? Number(student_id) : null
 
     if (!studentId) {
       const { rows: students } = await pool.query(
-        `INSERT INTO students (firstname, lastname, class_id)
-         VALUES ($1, $2, $3) RETURNING id`,
-        [prenom_eleve, nom_eleve, class_id],
+        `INSERT INTO students (firstname, lastname, class_id, phone)
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [prenom_eleve, nom_eleve, class_id, phone || null],
       )
       studentId = students[0].id
     }

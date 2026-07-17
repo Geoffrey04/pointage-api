@@ -168,9 +168,9 @@ module.exports = async function handleInscription(req, res) {
     await generateDossierPDF(outputPath, type, data)
 
     const { rows } = await pool.query(
-      `INSERT INTO dossiers (type, nom_eleve, prenom_eleve, pdf_filename)
-       VALUES ($1, $2, $3, $4) RETURNING id`,
-      [type, safeEleve.nom, safeEleve.prenom, filename],
+      `INSERT INTO dossiers (type, nom_eleve, prenom_eleve, pdf_filename, phone)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [type, safeEleve.nom, safeEleve.prenom, filename, safeParents.telephone || null],
     )
 
     sendDossierEmail(type, safeEleve.nom, safeEleve.prenom, outputPath).catch((e) =>
