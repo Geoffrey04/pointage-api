@@ -8,7 +8,7 @@ const UPLOADS = path.join(__dirname, '..', 'uploads', 'dossiers')
 fs.mkdirSync(UPLOADS, { recursive: true })
 
 const INSTRUMENTS_ALLOWED = new Set([
-  'Hautbois', 'Flûte traversère', 'Clarinette',
+  'Hautbois', 'Flûte traversière', 'Clarinette',
   'Saxophone', 'Trompette', "Cor d'harmonie",
   'Trombone', 'Euphonium/Basse', 'Percussion',
 ])
