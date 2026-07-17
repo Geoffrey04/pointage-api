@@ -192,6 +192,32 @@ router.post('/', async (req, res) => {
   }
 })
 
+// POST /api/admin/school-years/:id/regenerate — supprime et recrée toutes les séances
+router.post('/:id/regenerate', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id)) return res.status(400).json({ message: 'id invalide' })
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, label,
+              to_char(start_date, 'YYYY-MM-DD') AS start_date,
+              to_char(end_date,   'YYYY-MM-DD') AS end_date
+       FROM school_years WHERE id = $1`,
+      [id],
+    )
+    if (!rows.length) return res.status(404).json({ message: 'Année introuvable' })
+    const year = rows[0]
+
+    await pool.query('DELETE FROM sessions WHERE school_year_id = $1', [id])
+    const count = await generateSessions(id, year.label, year.start_date, year.end_date)
+
+    res.json({ message: `${count} séances régénérées pour ${year.label}`, sessions_generated: count })
+  } catch (e) {
+    console.error('POST /api/admin/school-years/:id/regenerate :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
+
 // PATCH /api/admin/school-years/:id/current — définit l'année courante
 router.patch('/:id/current', async (req, res) => {
   const id = Number(req.params.id)
