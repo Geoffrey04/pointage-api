@@ -784,6 +784,11 @@ app.post('/api/admin/dossiers/:id/accept', authenticateToken, authorizeRoles('ad
         [prenom_eleve, nom_eleve, class_id, phone || null],
       )
       studentId = students[0].id
+    } else {
+      await pool.query(
+        'UPDATE students SET class_id = $1 WHERE id = $2',
+        [class_id, studentId],
+      )
     }
 
     await pool.query(
@@ -795,7 +800,7 @@ app.post('/api/admin/dossiers/:id/accept', authenticateToken, authorizeRoles('ad
 
     await pool.query('UPDATE dossiers SET status = $1 WHERE id = $2', ['accepted', id])
 
-    res.json({ success: true, student_id: students[0].id })
+    res.json({ success: true, student_id: studentId })
   } catch (e) {
     console.error('POST /api/admin/dossiers/:id/accept :', e)
     res.status(500).json({ message: 'Erreur serveur' })
@@ -1131,7 +1136,11 @@ sessionsRouter.get(
     try {
       const { classId } = req.params
       const { rows } = await pool.query(
-        "SELECT id, to_char(date,'YYYY-MM-DD') AS date, status, note FROM sessions WHERE class_id=$1 ORDER BY date",
+        `SELECT s.id, to_char(s.date,'YYYY-MM-DD') AS date, s.status, s.note
+         FROM sessions s
+         JOIN school_years sy ON sy.id = s.school_year_id AND sy.is_current = true
+         WHERE s.class_id = $1
+         ORDER BY s.date`,
         [classId],
       )
       res.json(rows)
