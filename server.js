@@ -1438,59 +1438,91 @@ async function initPushSubscriptions() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CRON — rappel pointage chaque jour à 12h (Europe/Paris)
+// RAPPELS PUSH — logique extraite pour cron + endpoint HTTP
 // ─────────────────────────────────────────────────────────────
-cron.schedule('0 12 * * *', async () => {
-  if (!process.env.VAPID_PUBLIC_KEY) return
+async function sendReminders() {
+  if (!process.env.VAPID_PUBLIC_KEY) {
+    console.warn('[reminders] VAPID non configuré — envoi ignoré')
+    return { sent: 0, skipped: 'vapid_missing' }
+  }
 
   const jsDay = new Date().getDay()
   const isoDay = jsDay === 0 ? 7 : jsDay
 
-  try {
-    const { rows: profs } = await pool.query(`
-      SELECT t.user_id, u.username, array_agg(DISTINCT t.nom ORDER BY t.nom) AS class_names
-      FROM (
-        SELECT c.user_id, c.nom FROM classes c WHERE c.weekday = $1
-        UNION ALL
-        SELECT cu.user_id, c.nom
-        FROM classes c JOIN class_users cu ON cu.class_id = c.id
-        WHERE c.weekday = $1
-      ) t
-      JOIN users u ON u.id = t.user_id
-      GROUP BY t.user_id, u.username
-    `, [isoDay])
+  // Récupère les profs avec une classe aujourd'hui dont le pointage n'est pas encore commencé
+  // (au moins 1 présence en base = classe ignorée)
+  const { rows: profs } = await pool.query(`
+    SELECT t.user_id, u.username, array_agg(DISTINCT t.nom ORDER BY t.nom) AS class_names
+    FROM (
+      SELECT c.user_id, c.nom, c.id AS class_id FROM classes c WHERE c.weekday = $1
+      UNION ALL
+      SELECT cu.user_id, c.nom, c.id AS class_id
+      FROM classes c JOIN class_users cu ON cu.class_id = c.id
+      WHERE c.weekday = $1
+    ) t
+    JOIN users u ON u.id = t.user_id
+    WHERE NOT EXISTS (
+      SELECT 1 FROM sessions s
+      JOIN attendances a ON a.session_id = s.id
+      WHERE s.class_id = t.class_id
+        AND s.date = CURRENT_DATE
+    )
+    GROUP BY t.user_id, u.username
+  `, [isoDay])
 
-    for (const prof of profs) {
-      const { rows: subs } = await pool.query(
-        'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1',
-        [prof.user_id],
-      )
-      for (const sub of subs) {
-        const classNames = prof.class_names
-        const isSingle = classNames.length === 1
-        const prenom = prof.username
+  let sent = 0
+  for (const prof of profs) {
+    const { rows: subs } = await pool.query(
+      'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1',
+      [prof.user_id],
+    )
+    const classNames = prof.class_names
+    const isSingle = classNames.length === 1
+    const prenom = prof.username
 
-        const title = 'Rappel pointage 🎵'
-        const body = isSingle
-          ? `Bonjour ${prenom}, n'oubliez pas de faire le pointage de votre classe ${classNames[0]} aujourd'hui, ce serait dommage !`
-          : `Bonjour ${prenom}, vous avez ${classNames.length} classes aujourd'hui : ${classNames.join(', ')}. N'oubliez pas de pointer, ce serait dommage !`
+    const title = 'Rappel pointage 🎵'
+    const body = isSingle
+      ? `Bonjour ${prenom}, n'oubliez pas de faire le pointage de votre classe ${classNames[0]} aujourd'hui !`
+      : `Bonjour ${prenom}, vous avez ${classNames.length} classes à pointer aujourd'hui : ${classNames.join(', ')}.`
 
-        const payload = JSON.stringify({ title, body, url: '/classes' })
-        await webpush.sendNotification(
-          { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-          payload,
-        ).catch(async (err) => {
-          if (err.statusCode === 410) {
-            await pool.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [sub.endpoint])
-          }
-        })
-      }
+    const payload = JSON.stringify({ title, body, url: '/classes' })
+    for (const sub of subs) {
+      await webpush.sendNotification(
+        { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+        payload,
+      ).catch(async (err) => {
+        if (err.statusCode === 410) {
+          await pool.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [sub.endpoint])
+        }
+      })
+      sent++
     }
-    console.log('[cron] rappels pointage envoyés —', profs.length, 'prof(s) concerné(s)')
-  } catch (e) {
-    console.error('[cron] erreur rappel pointage :', e)
   }
+  console.log(`[reminders] ${sent} notification(s) envoyée(s) — ${profs.length} prof(s) concerné(s)`)
+  return { sent, profs: profs.length }
+}
+
+// CRON — rappel à 12h (Europe/Paris), fallback si Passenger est actif
+cron.schedule('0 12 * * *', () => {
+  sendReminders().catch(e => console.error('[cron] erreur rappel :', e))
 }, { timezone: 'Europe/Paris' })
+
+// POST /api/admin/trigger-reminders — appelé par le cron cPanel
+// Authorization: Bearer <CRON_SECRET>
+app.post('/api/admin/trigger-reminders', async (req, res) => {
+  const secret = process.env.CRON_SECRET
+  const auth = req.headers['authorization'] || ''
+  if (!secret || auth !== `Bearer ${secret}`) {
+    return res.status(401).json({ message: 'Non autorisé' })
+  }
+  try {
+    const result = await sendReminders()
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    console.error('[trigger-reminders] erreur :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
 
 app.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`)
