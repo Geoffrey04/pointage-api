@@ -372,11 +372,11 @@ async function ensureSessionsForWeekday(classId, isoWeekday, startYear = schoolS
 const DEV = (process.env.NODE_ENV || 'development') !== 'production'
 
 const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
+  windowMs: 5 * 60 * 1000,
+  max: 20,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { message: 'Trop de tentatives de connexion, réessayez dans 15 minutes.' },
+  message: { message: 'Trop de tentatives de connexion, réessayez dans 5 minutes.' },
 })
 
 app.post('/login', loginLimiter, async (req, res) => {
