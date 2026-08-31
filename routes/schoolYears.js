@@ -218,6 +218,38 @@ router.post('/:id/regenerate', async (req, res) => {
   }
 })
 
+// DELETE /api/admin/school-years/:id — supprime une année et toutes ses séances/présences
+router.delete('/:id', async (req, res) => {
+  const id = Number(req.params.id)
+  if (!Number.isInteger(id)) return res.status(400).json({ message: 'id invalide' })
+
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, label, is_current FROM school_years WHERE id = $1',
+      [id],
+    )
+    if (!rows.length) return res.status(404).json({ message: 'Année introuvable' })
+    if (rows[0].is_current) {
+      return res.status(409).json({ message: 'Impossible de supprimer l\'année actuellement active' })
+    }
+
+    // Supprime les présences liées aux séances de cette année
+    await pool.query(
+      'DELETE FROM attendances WHERE session_id IN (SELECT id FROM sessions WHERE school_year_id = $1)',
+      [id],
+    )
+    // Supprime les séances
+    await pool.query('DELETE FROM sessions WHERE school_year_id = $1', [id])
+    // Supprime l'année
+    await pool.query('DELETE FROM school_years WHERE id = $1', [id])
+
+    res.json({ message: `Année "${rows[0].label}" supprimée avec succès` })
+  } catch (e) {
+    console.error('DELETE /api/admin/school-years/:id :', e)
+    res.status(500).json({ message: 'Erreur serveur' })
+  }
+})
+
 // PATCH /api/admin/school-years/:id/current — définit l'année courante
 router.patch('/:id/current', async (req, res) => {
   const id = Number(req.params.id)
