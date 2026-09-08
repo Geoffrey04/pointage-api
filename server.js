@@ -487,28 +487,69 @@
       }
     })
 
-    admin.get('/attendance-rate', async (_req, res) => {
+    // Pointages "attendus" pour une année : une ligne par (séance pointable, élève attendu).
+    // Reprend la logique de la matrice : class_student_weekday prime sur classes.weekday.
+    // Bornée à CURRENT_DATE — les séances futures ne sont pas encore pointables.
+    const EXPECTED_CTE = `
+      WITH cur AS (
+        SELECT id FROM school_years
+        WHERE ($1::int IS NOT NULL AND id = $1::int)
+           OR ($1::int IS NULL AND is_current = true)
+        LIMIT 1
+      ),
+      pointable AS (
+        SELECT s.id, s.class_id, s.date
+        FROM sessions s
+        WHERE s.school_year_id = (SELECT id FROM cur)
+          AND s.status IN ('scheduled', 'extra')
+          AND s.date <= CURRENT_DATE
+      ),
+      expected AS (
+        SELECT p.class_id, p.id AS session_id, p.date, ce.student_id
+        FROM pointable p
+        JOIN classes c ON c.id = p.class_id
+        JOIN class_enrollments ce
+          ON ce.class_id = p.class_id
+         AND ce.school_year_id = (SELECT id FROM cur)
+        LEFT JOIN class_student_weekday csw
+          ON csw.class_id = p.class_id AND csw.student_id = ce.student_id
+        WHERE CASE
+          WHEN csw.weekday IS NOT NULL THEN EXTRACT(ISODOW FROM p.date)::int = csw.weekday
+          WHEN c.weekday  IS NOT NULL THEN EXTRACT(ISODOW FROM p.date)::int = c.weekday
+          ELSE TRUE
+        END
+      )`
+
+    admin.get('/attendance-rate', async (req, res) => {
       try {
-        const { rows } = await pool.query(`
+        const yearId = req.query.year_id ? Number(req.query.year_id) : null
+        const { rows } = await pool.query(
+          `${EXPECTED_CTE}
           SELECT c.id, c.nom AS name,
-                COUNT(DISTINCT s.id)::int AS sessions,
-                COUNT(a.*)::int AS marked,
+                COUNT(DISTINCT e.session_id)::int AS sessions,
+                COUNT(e.session_id)::int         AS expected,
+                COUNT(a.status)::int             AS marked,
                 SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)::int AS presents,
+                SUM(CASE WHEN a.status = 'excused' THEN 1 ELSE 0 END)::int AS excused,
+                SUM(CASE WHEN a.status = 'absent'  THEN 1 ELSE 0 END)::int AS absents,
                 ROUND(
-                  CASE WHEN COUNT(a.*) = 0 THEN 0
-                        ELSE 100.0 * SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) / COUNT(a.*)
+                  CASE WHEN COUNT(a.status) = 0 THEN 0
+                       ELSE 100.0 * SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) / COUNT(a.status)
                   END, 1
-                ) AS rate
+                ) AS rate,
+                ROUND(
+                  CASE WHEN COUNT(e.session_id) = 0 THEN 0
+                       ELSE 100.0 * COUNT(a.status) / COUNT(e.session_id)
+                  END, 1
+                ) AS coverage
           FROM classes c
-          LEFT JOIN sessions s ON s.class_id = c.id
-            AND NOT EXISTS (
-              SELECT 1 FROM periodes_exclues pe
-              WHERE s.date BETWEEN pe.date_debut AND pe.date_fin
-            )
-          LEFT JOIN attendances a ON a.session_id = s.id
+          LEFT JOIN expected e ON e.class_id = c.id
+          LEFT JOIN attendances a
+            ON a.session_id = e.session_id AND a.student_id = e.student_id
           GROUP BY c.id, c.nom
-          ORDER BY rate ASC
-        `)
+          ORDER BY rate ASC, c.nom ASC`,
+          [yearId],
+        )
         res.json(rows)
       } catch (e) {
         console.error('GET /api/admin/attendance-rate :', e)
@@ -516,30 +557,35 @@
       }
     })
 
-    admin.get('/attendance-by-month', async (_req, res) => {
+    admin.get('/attendance-by-month', async (req, res) => {
       try {
-        const { rows } = await pool.query(`
+        const yearId = req.query.year_id ? Number(req.query.year_id) : null
+        const { rows } = await pool.query(
+          `${EXPECTED_CTE}
           SELECT c.id, c.nom AS name,
-                EXTRACT(YEAR  FROM s.date)::int AS year,
-                EXTRACT(MONTH FROM s.date)::int AS month,
-                COUNT(a.*)::int AS marked,
+                EXTRACT(YEAR  FROM e.date)::int AS year,
+                EXTRACT(MONTH FROM e.date)::int AS month,
+                COUNT(e.session_id)::int AS expected,
+                COUNT(a.status)::int     AS marked,
                 SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END)::int AS presents,
                 ROUND(
-                  CASE WHEN COUNT(a.*) = 0 THEN 0
-                        ELSE 100.0 * SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) / COUNT(a.*)
+                  CASE WHEN COUNT(a.status) = 0 THEN 0
+                       ELSE 100.0 * SUM(CASE WHEN a.status = 'present' THEN 1 ELSE 0 END) / COUNT(a.status)
                   END, 1
-                ) AS rate
+                ) AS rate,
+                ROUND(
+                  CASE WHEN COUNT(e.session_id) = 0 THEN 0
+                       ELSE 100.0 * COUNT(a.status) / COUNT(e.session_id)
+                  END, 1
+                ) AS coverage
           FROM classes c
-          JOIN sessions s ON s.class_id = c.id
-            AND s.date IS NOT NULL
-            AND NOT EXISTS (
-              SELECT 1 FROM periodes_exclues pe
-              WHERE s.date BETWEEN pe.date_debut AND pe.date_fin
-            )
-          JOIN attendances a ON a.session_id = s.id
+          JOIN expected e ON e.class_id = c.id
+          LEFT JOIN attendances a
+            ON a.session_id = e.session_id AND a.student_id = e.student_id
           GROUP BY c.id, c.nom, year, month
-          ORDER BY c.id, year, month
-        `)
+          ORDER BY c.id, year, month`,
+          [yearId],
+        )
         res.json(rows)
       } catch (e) {
         console.error('GET /api/admin/attendance-by-month :', e)
@@ -1554,34 +1600,10 @@
     // ─────────────────────────────────────────────────────────────
     app.use((_req, res) => res.status(404).json({ error: 'Not found' }))
 
-    // ─────────────────────────────────────────────────────────────
-    // Init : table periodes_exclues + seed Zone B 2024-2025
-    // Dates à vérifier sur education.gouv.fr si l'année change
-    // ─────────────────────────────────────────────────────────────
-    async function initPeriodesExclues() {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS periodes_exclues (
-          id         SERIAL PRIMARY KEY,
-          label      VARCHAR(100) NOT NULL,
-          date_debut DATE NOT NULL,
-          date_fin   DATE NOT NULL
-        )
-      `)
-      const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM periodes_exclues')
-      if (rows[0].n > 0) return
-      await pool.query(`
-        INSERT INTO periodes_exclues (label, date_debut, date_fin) VALUES
-          ('Toussaint 2024',          '2024-10-19', '2024-11-03'),
-          ('Armistice 2024',          '2024-11-11', '2024-11-11'),
-          ('Noel 2024',               '2024-12-21', '2025-01-05'),
-          ('Hiver Zone B 2025',       '2025-02-22', '2025-03-09'),
-          ('Printemps Zone B 2025',   '2025-04-19', '2025-05-04'),
-          ('Victoire 1945 2025',      '2025-05-08', '2025-05-08'),
-          ('Ascension 2025',          '2025-05-29', '2025-05-29'),
-          ('Pentecote 2025',          '2025-06-09', '2025-06-09')
-      `)
-      console.log('[init] periodes_exclues seeded')
-    }
+    // Note : la table periodes_exclues n'est plus utilisée. Les périodes non
+    // pointables sont désormais portées par sessions.status (vacation/holiday/
+    // cancelled), posé manuellement depuis la matrice. La table subsiste en base
+    // mais n'est plus ni lue ni alimentée.
 
     async function initPushSubscriptions() {
       await pool.query(`
@@ -1687,7 +1709,6 @@
     app.listen(PORT, () => {
       console.log(`Serveur démarré sur le port ${PORT}`)
     })
-    initPeriodesExclues().catch(e => console.error('[init] periodes_exclues :', e))
     pool.query(`
       ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS school_year_id INTEGER REFERENCES school_years(id) ON DELETE SET NULL
     `).catch(e => console.error('[migration] dossiers.school_year_id :', e))
