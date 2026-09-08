@@ -1709,31 +1709,39 @@
         return { sent: 0, skipped: 'vapid_missing' }
       }
 
-      const jsDay = new Date().getDay()
-      const isoDay = jsDay === 0 ? 7 : jsDay
-
-      // Récupère les profs avec une classe aujourd'hui dont le pointage n'est pas encore commencé
-      // (au moins 1 présence en base = classe ignorée)
+      // On part des séances réellement pointables aujourd'hui, et non du jour
+      // théorique de la classe. Sans ça, un rappel partait aussi les jours
+      // marqués vacances, fériés ou annulés — ce qui arrive à chaque congé
+      // depuis que ces statuts sont posés à la main.
+      //
+      // Passer par les séances couvre aussi la flûte : un élève placé un autre
+      // jour via class_student_weekday a bien une séance ce jour-là.
       const { rows: profs } = await pool.query(`
-        SELECT t.user_id, u.username, array_agg(DISTINCT t.nom ORDER BY t.nom) AS class_names
-        FROM (
-          SELECT c.user_id, c.nom, c.id AS class_id FROM classes c WHERE c.weekday = $1
-          UNION ALL
-          SELECT cu.user_id, c.nom, c.id AS class_id
-          FROM classes c JOIN class_users cu ON cu.class_id = c.id
-          WHERE c.weekday = $1
-        ) t
-        JOIN users u ON u.id = t.user_id
-        WHERE NOT EXISTS (
-          SELECT 1 FROM sessions s
-          JOIN attendances a ON a.session_id = s.id
-          WHERE s.class_id = t.class_id
-            AND s.date = CURRENT_DATE
+        WITH today AS (
+          SELECT s.id, s.class_id
+          FROM sessions s
+          JOIN school_years sy ON sy.id = s.school_year_id AND sy.is_current = true
+          WHERE s.date = CURRENT_DATE
+            AND s.status IN ('scheduled', 'extra')
+            AND NOT EXISTS (
+              SELECT 1 FROM attendances a WHERE a.session_id = s.id
+            )
         )
+        SELECT t.user_id, u.username, array_agg(DISTINCT c.nom ORDER BY c.nom) AS class_names
+        FROM (
+          SELECT c.user_id, td.class_id
+          FROM today td JOIN classes c ON c.id = td.class_id
+          UNION
+          SELECT cu.user_id, td.class_id
+          FROM today td JOIN class_users cu ON cu.class_id = td.class_id
+        ) t
+        JOIN classes c ON c.id = t.class_id
+        JOIN users   u ON u.id = t.user_id
         GROUP BY t.user_id, u.username
-      `, [isoDay])
+      `)
 
       let sent = 0
+      let failed = 0
       for (const prof of profs) {
         const { rows: subs } = await pool.query(
           'SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = $1',
@@ -1750,19 +1758,30 @@
 
         const payload = JSON.stringify({ title, body, url: '/classes' })
         for (const sub of subs) {
-          await webpush.sendNotification(
-            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-            payload,
-          ).catch(async (err) => {
-            if (err.statusCode === 410) {
+          try {
+            await webpush.sendNotification(
+              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+              payload,
+            )
+            // Incrémenté seulement après un envoi réussi : l'ancienne version
+            // comptait aussi les échecs, et le log annonçait des envois qui
+            // n'avaient pas eu lieu.
+            sent++
+          } catch (err) {
+            failed++
+            // 404/410 : l'abonnement n'est plus valide côté navigateur.
+            if (err.statusCode === 410 || err.statusCode === 404) {
               await pool.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [sub.endpoint])
+            } else {
+              console.error('[reminders] échec envoi :', err.statusCode ?? err.message)
             }
-          })
-          sent++
+          }
         }
       }
-      console.log(`[reminders] ${sent} notification(s) envoyée(s) — ${profs.length} prof(s) concerné(s)`)
-      return { sent, profs: profs.length }
+      console.log(
+        `[reminders] ${sent} envoyée(s), ${failed} échec(s) — ${profs.length} prof(s) concerné(s)`,
+      )
+      return { sent, failed, profs: profs.length }
     }
 
     // CRON — rappel à 12h (Europe/Paris), fallback si Passenger est actif
@@ -1770,10 +1789,21 @@
       sendReminders().catch(e => console.error('[cron] erreur rappel :', e))
     }, { timezone: 'Europe/Paris' })
 
-    app.listen(PORT, () => {
-      console.log(`Serveur démarré sur le port ${PORT}`)
-    })
-    pool.query(`
-      ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS school_year_id INTEGER REFERENCES school_years(id) ON DELETE SET NULL
-    `).catch(e => console.error('[migration] dossiers.school_year_id :', e))
-    initPushSubscriptions().catch(e => console.error('[init] push_subscriptions :', e))
+    // Préparation du schéma AVANT d'accepter des requêtes : ces deux appels
+    // étaient lancés après app.listen, laissant une fenêtre où le serveur
+    // répondait sur un schéma pas encore migré. Un échec ici n'est pas bloquant
+    // (les instructions sont idempotentes), on démarre quand même.
+    async function prepareSchema() {
+      await pool.query(`
+        ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS school_year_id INTEGER REFERENCES school_years(id) ON DELETE SET NULL
+      `)
+      await initPushSubscriptions()
+    }
+
+    prepareSchema()
+      .catch((e) => console.error('[boot] préparation du schéma :', e.message))
+      .finally(() => {
+        app.listen(PORT, () => {
+          console.log(`Serveur démarré sur le port ${PORT}`)
+        })
+      })
