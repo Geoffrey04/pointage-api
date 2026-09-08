@@ -1,0 +1,3 @@
+# Normalise les fins de ligne en LF dans le depot.
+# Evite les diffs fantomes quand un outil reecrit un fichier en CRLF.
+* text=auto eol=lf

@@ -1134,8 +1134,9 @@
           )
         }
 
-        // Si l'élève a un jour spécifique, on génère ses séances pour l'année en cours
-        if (iso) await ensureSessionsForWeekday(Number(class_id), iso)
+        // Ne génère plus de séances depuis le jour perso de l'élève.
+        // Les séances sont gérées par le jour de la classe (classes.weekday)
+        // et, si besoin, par class_student_weekday.
         res.json(rows[0])
       } catch (err) {
         console.error('POST /api/students :', err)
