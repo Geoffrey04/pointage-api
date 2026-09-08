@@ -2,43 +2,6 @@ const express = require('express')
 const router = express.Router()
 const pool = require('../db')
 
-// ─── Vacances scolaires Zone B + jours fériés ────────────────
-// Source : education.gouv.fr — à vérifier chaque année
-const VACANCES_ZONE_B = {
-  '2025-2026': [
-    { start: '2025-10-18', end: '2025-11-02', label: 'Toussaint' },
-    { start: '2025-12-20', end: '2026-01-04', label: 'Noël' },
-    { start: '2026-02-14', end: '2026-03-01', label: 'Hiver' },
-    { start: '2026-04-11', end: '2026-04-26', label: 'Printemps' },
-  ],
-  '2026-2027': [
-    { start: '2026-10-17', end: '2026-11-01', label: 'Toussaint' },
-    { start: '2026-12-19', end: '2027-01-03', label: 'Noël' },
-    { start: '2027-02-13', end: '2027-02-28', label: 'Hiver' },
-    { start: '2027-04-17', end: '2027-05-02', label: 'Printemps' },
-  ],
-}
-
-const JOURS_FERIES = {
-  '2025-2026': [
-    '2025-11-11', // Armistice
-    '2026-04-06', // Lundi de Pâques
-    '2026-05-01', // Fête du Travail
-    '2026-05-08', // Victoire 1945
-    '2026-05-14', // Ascension
-    '2026-05-25', // Lundi de Pentecôte
-  ],
-  '2026-2027': [
-    '2026-11-01', // Toussaint
-    '2026-11-11', // Armistice
-    '2027-03-29', // Lundi de Pâques
-    '2027-05-01', // Fête du Travail
-    '2027-05-06', // Ascension
-    '2027-05-08', // Victoire 1945
-    '2027-05-17', // Lundi de Pentecôte
-  ],
-}
-
 // ─── Utilitaires dates (UTC strict, même logique que server.js) ─
 function utcNoon(y, m0, d) {
   return new Date(Date.UTC(y, m0, d, 12))
@@ -77,59 +40,26 @@ function enumerateDates(start, end, isoDow) {
   return out
 }
 
-// ─── Statut d'une séance selon le calendrier ─────────────────
-function getStatus(dateStr, yearLabel) {
-  if ((JOURS_FERIES[yearLabel] || []).includes(dateStr)) return 'holiday'
-  for (const vac of (VACANCES_ZONE_B[yearLabel] || [])) {
-    if (dateStr >= vac.start && dateStr <= vac.end) return 'vacation'
-  }
-  return null
-}
-
 // ─── Génération des séances pour toutes les classes ──────────
-async function generateSessions(schoolYearId, yearLabel, startDate, endDate) {
+async function generateSessions(schoolYearId, _yearLabel, startDate, endDate) {
   const start = parseYMD(startDate)
   const end = parseYMD(endDate)
 
-  const { rows: classes } = await pool.query(
-    'SELECT id, weekday FROM classes WHERE weekday IS NOT NULL',
+  const { rows: slots } = await pool.query(
+    `SELECT id AS class_id, weekday FROM classes WHERE weekday IS NOT NULL`,
   )
 
   let total = 0
 
-  for (const cls of classes) {
+  for (const cls of slots) {
     const dates = enumerateDates(start, end, cls.weekday)
 
-    const normal = [], vacation = [], holiday = []
-    for (const d of dates) {
-      const s = getStatus(d, yearLabel)
-      if (s === 'vacation') vacation.push(d)
-      else if (s === 'holiday') holiday.push(d)
-      else normal.push(d)
-    }
-
-    if (normal.length) {
+    if (dates.length) {
       await pool.query(
         `INSERT INTO sessions (class_id, date, school_year_id)
          SELECT $1, unnest($2::date[]), $3
          ON CONFLICT (class_id, date) DO NOTHING`,
-        [cls.id, normal, schoolYearId],
-      )
-    }
-    if (vacation.length) {
-      await pool.query(
-        `INSERT INTO sessions (class_id, date, status, school_year_id)
-         SELECT $1, unnest($2::date[]), 'vacation', $3
-         ON CONFLICT (class_id, date) DO NOTHING`,
-        [cls.id, vacation, schoolYearId],
-      )
-    }
-    if (holiday.length) {
-      await pool.query(
-        `INSERT INTO sessions (class_id, date, status, school_year_id)
-         SELECT $1, unnest($2::date[]), 'holiday', $3
-         ON CONFLICT (class_id, date) DO NOTHING`,
-        [cls.id, holiday, schoolYearId],
+        [cls.class_id, dates, schoolYearId],
       )
     }
     total += dates.length
@@ -233,6 +163,11 @@ router.delete('/:id', async (req, res) => {
       return res.status(409).json({ message: 'Impossible de supprimer l\'année actuellement active' })
     }
 
+    // Remet à "pending" les dossiers acceptés pour cette année
+    await pool.query(
+      "UPDATE dossiers SET status = 'pending', school_year_id = NULL WHERE school_year_id = $1",
+      [id],
+    )
     // Supprime les présences liées aux séances de cette année
     await pool.query(
       'DELETE FROM attendances WHERE session_id IN (SELECT id FROM sessions WHERE school_year_id = $1)',
