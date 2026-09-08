@@ -111,6 +111,19 @@
         .filter(Boolean),
     )
 
+    // Quand aucune origine n'est configurée, les deux middlewares ci-dessous
+    // acceptent TOUTES les origines avec Allow-Credentials. Le comportement est
+    // conservé pour ne pas couper l'app si la variable venait à manquer, mais
+    // l'anomalie doit être visible dans les logs de démarrage.
+    if (ALLOWED.size === 0) {
+      console.warn(
+        '⚠️  CORS_ORIGINS vide — toutes les origines sont acceptées. ' +
+        'Définissez CORS_ORIGINS (ex: https://emm-pointage.fr) pour restreindre.',
+      )
+    } else {
+      console.log('[boot] CORS restreint à :', [...ALLOWED].join(', '))
+    }
+
     // Pré-flight OPTIONS intercepté avant tout autre middleware
     app.use((req, res, next) => {
       res.setHeader('Vary', 'Origin')
@@ -175,12 +188,49 @@
       res.json({ ok: true, time: new Date().toISOString(), v: 2 })
     })
 
-    app.get('/__cors', (req, res) => {
+    // Les sondes /__cors et /__db sont déclarées plus bas, une fois les
+    // middlewares d'authentification définis : elles exposent des informations
+    // d'infrastructure et sont réservées aux administrateurs.
+
+    // ─────────────────────────────────────────────────────────────
+    // Middlewares d'authentification et d'autorisation
+    // ─────────────────────────────────────────────────────────────
+
+    function authenticateToken(req, res, next) {
+      const authHeader = req.headers['authorization']
+      const token = authHeader && authHeader.split(' ')[1]
+      if (!token) return res.sendStatus(401)
+      jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+        // 401 et non 403 : le jeton est absent ou invalide, donc la session est
+        // à refaire. Le 403 reste réservé aux refus d'autorisation, ce qui permet
+        // au client de distinguer « reconnecte-toi » de « tu n'as pas le droit ».
+        if (err) return res.sendStatus(401)
+        req.user = user
+        next()
+      })
+    }
+
+    function authorizeRoles(...roles) {
+      return (req, res, next) => {
+        if (!req.user || !roles.includes(req.user.role)) return res.sendStatus(403)
+        next()
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Sondes de diagnostic — réservées aux administrateurs.
+    // Elles révèlent la configuration CORS et l'identité du serveur
+    // PostgreSQL (base, utilisateur, hôte, version) : autant d'éléments
+    // qui n'ont rien à faire en accès public.
+    // ─────────────────────────────────────────────────────────────
+    app.get('/__cors', authenticateToken, authorizeRoles('admin'), (req, res) => {
       const origin = (req.headers.origin || '').replace(/\/$/, '')
-      res.json({ origin, allowedOrigins: [...ALLOWED], method: req.method, headers: req.headers })
+      // On ne renvoie pas req.headers : inutile au diagnostic et cela
+      // réfléchirait l'en-tête Authorization dans la réponse.
+      res.json({ origin, allowedOrigins: [...ALLOWED], method: req.method })
     })
 
-    app.get('/__db', async (_req, res) => {
+    app.get('/__db', authenticateToken, authorizeRoles('admin'), async (_req, res) => {
       try {
         const { rows } = await pool.query(`
           SELECT
@@ -195,28 +245,6 @@
         res.status(500).json({ error: 'db_probe_failed', detail: String(e.message || e) })
       }
     })
-
-    // ─────────────────────────────────────────────────────────────
-    // Middlewares d'authentification et d'autorisation
-    // ─────────────────────────────────────────────────────────────
-
-    function authenticateToken(req, res, next) {
-      const authHeader = req.headers['authorization']
-      const token = authHeader && authHeader.split(' ')[1]
-      if (!token) return res.sendStatus(401)
-      jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
-        if (err) return res.sendStatus(403)
-        req.user = user
-        next()
-      })
-    }
-
-    function authorizeRoles(...roles) {
-      return (req, res, next) => {
-        if (!req.user || !roles.includes(req.user.role)) return res.sendStatus(403)
-        next()
-      }
-    }
 
     // Vérifie que l'utilisateur connecté a accès à la classe demandée
     // (propriétaire ou co-prof). Les admins passent toujours.
@@ -390,7 +418,14 @@
     // ─────────────────────────────────────────────────────────────
     // AUTH
     // ─────────────────────────────────────────────────────────────
-    const DEV = (process.env.NODE_ENV || 'development') !== 'production'
+    // Le détail des erreurs n'est renvoyé au client qu'en développement déclaré.
+    // Auparavant un NODE_ENV absent suffisait à activer ce mode et à exposer
+    // err.code / err.message en production.
+    const DEV = process.env.NODE_ENV === 'development'
+
+    // Haché de comparaison utilisé quand le compte n'existe pas, pour que la
+    // réponse coûte le même temps qu'une vraie vérification (cf. /login).
+    const DUMMY_HASH = bcrypt.hashSync('mot-de-passe-inexistant', 10)
 
     const loginLimiter = rateLimit({
       windowMs: 5 * 60 * 1000,
@@ -398,6 +433,18 @@
       standardHeaders: true,
       legacyHeaders: false,
       message: { message: 'Trop de tentatives de connexion, réessayez dans 5 minutes.' },
+    })
+
+    // Chaque soumission génère un PDF, écrit sur disque et déclenche un e-mail :
+    // sans limite, l'endpoint public permettait de saturer le disque et d'inonder
+    // la boîte de l'administrateur. 10 par heure laisse largement la place à une
+    // famille inscrivant plusieurs enfants depuis la même connexion.
+    const inscriptionLimiter = rateLimit({
+      windowMs: 60 * 60 * 1000,
+      max: 10,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { message: 'Trop de soumissions depuis cette connexion. Réessayez dans une heure.' },
     })
 
     app.post('/login', loginLimiter, async (req, res) => {
@@ -414,14 +461,19 @@
           LIMIT 1`,
           [String(username).trim()],
         )
-        if (!rows.length) {
-          return res.status(401).json({ message: 'Utilisateur non trouvé' })
-        }
 
         const user = rows[0]
-        const ok = bcrypt.compareSync(String(password), user.password)
-        if (!ok) {
-          return res.status(401).json({ message: 'Mot de passe incorrect' })
+
+        // Message unique quel que soit le cas, et comparaison bcrypt même quand
+        // le compte n'existe pas : deux messages distincts, ou une réponse
+        // immédiate faute de hachage à vérifier, permettaient d'énumérer les
+        // comptes valides. Les identifiants étant de la forme Prénom.Nom,
+        // l'information était facile à exploiter.
+        const hash = user ? user.password : DUMMY_HASH
+        const ok = await bcrypt.compare(String(password), hash)
+
+        if (!user || !ok) {
+          return res.status(401).json({ message: 'Identifiant ou mot de passe incorrect' })
         }
 
         const token = jwt.sign(
@@ -822,7 +874,26 @@
     })
 
     // Route publique (pas d'authentification requise)
-    app.post('/api/public/inscription', handleInscription)
+    app.post('/api/public/inscription', inscriptionLimiter, handleInscription)
+
+    // Déclenchement des rappels par le cron cPanel, authentifié par CRON_SECRET.
+    // Doit impérativement être déclarée AVANT le montage du routeur /api/admin :
+    // celui-ci applique authenticateToken à tout son préfixe, et tentait donc de
+    // valider le CRON_SECRET comme un JWT — la route était injoignable.
+    app.post('/api/admin/trigger-reminders', async (req, res) => {
+      const secret = process.env.CRON_SECRET
+      const auth = req.headers['authorization'] || ''
+      if (!secret || auth !== `Bearer ${secret}`) {
+        return res.status(401).json({ message: 'Non autorisé' })
+      }
+      try {
+        const result = await sendReminders()
+        res.json({ ok: true, ...result })
+      } catch (e) {
+        console.error('[trigger-reminders] erreur :', e)
+        res.status(500).json({ message: 'Erreur serveur' })
+      }
+    })
 
     app.use('/api/admin', admin)
 
@@ -1555,12 +1626,22 @@
             return res.status(400).json({ message: 'Date invalide (YYYY-MM-DD)' })
           }
 
+          // La lecture des séances joint school_years sur is_current : sans
+          // school_year_id, la séance extra était créée mais restait invisible
+          // dans la matrice comme dans les statistiques.
+          const { rows: cy } = await pool.query(
+            'SELECT id FROM school_years WHERE is_current = true LIMIT 1',
+          )
+          if (!cy.length) {
+            return res.status(409).json({ message: 'Aucune année scolaire active' })
+          }
+
           const { rows } = await pool.query(
-            `INSERT INTO sessions (class_id, date, status, note)
-            VALUES ($1, $2::date, 'extra', $3)
+            `INSERT INTO sessions (class_id, date, status, note, school_year_id)
+            VALUES ($1, $2::date, 'extra', $3, $4)
             ON CONFLICT (class_id, date) DO NOTHING
             RETURNING id, to_char(date,'YYYY-MM-DD') AS date, status, note`,
-            [classId, date, note ?? null],
+            [classId, date, note ?? null, cy[0].id],
           )
 
           if (!rows.length) {
@@ -1688,23 +1769,6 @@
     cron.schedule('0 12 * * *', () => {
       sendReminders().catch(e => console.error('[cron] erreur rappel :', e))
     }, { timezone: 'Europe/Paris' })
-
-    // POST /api/admin/trigger-reminders — appelé par le cron cPanel
-    // Authorization: Bearer <CRON_SECRET>
-    app.post('/api/admin/trigger-reminders', async (req, res) => {
-      const secret = process.env.CRON_SECRET
-      const auth = req.headers['authorization'] || ''
-      if (!secret || auth !== `Bearer ${secret}`) {
-        return res.status(401).json({ message: 'Non autorisé' })
-      }
-      try {
-        const result = await sendReminders()
-        res.json({ ok: true, ...result })
-      } catch (e) {
-        console.error('[trigger-reminders] erreur :', e)
-        res.status(500).json({ message: 'Erreur serveur' })
-      }
-    })
 
     app.listen(PORT, () => {
       console.log(`Serveur démarré sur le port ${PORT}`)
